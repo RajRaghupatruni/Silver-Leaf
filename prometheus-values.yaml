@@ -1,0 +1,7 @@
+server:
+  global:
+    scrape_interval: 15s
+  scrape_configs:
+    - job_name: 'nginx'
+      static_configs:
+        - targets: ['nginx-service.monitoring.svc.cluster.local:9113']

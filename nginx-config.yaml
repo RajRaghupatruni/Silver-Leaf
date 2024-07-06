@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: monitoring
+data:
+  default.conf: |
+    server {
+        listen 80;
+        location /stub_status {
+            stub_status on;
+            access_log off;
+        }
+    }

@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['192.168.49.2:30113']

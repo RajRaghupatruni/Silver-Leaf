@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: monitoring
+  labels:
+    app: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config-volume
+          mountPath: /etc/nginx/conf.d
+      - name: nginx-prometheus-exporter
+        image: nginx/nginx-prometheus-exporter:latest
+        ports:
+        - containerPort: 9113
+        args:
+        - -nginx.scrape-uri=http://localhost/stub_status
+      volumes:
+      - name: nginx-config-volume
+        configMap:
+          name: nginx-config
