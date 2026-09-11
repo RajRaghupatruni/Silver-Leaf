@@ -1,0 +1,212 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: optiscalers.optiscale.silver-leaf.io
+spec:
+  group: optiscale.silver-leaf.io
+  scope: Namespaced
+  names:
+    plural: optiscalers
+    singular: optiscaler
+    kind: OptiScaler
+    shortNames:
+      - osc
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Target
+          type: string
+          jsonPath: .spec.scaleTargetRef.name
+        - name: Current
+          type: integer
+          jsonPath: .status.currentReplicas
+        - name: Desired
+          type: integer
+          jsonPath: .status.desiredReplicas
+        - name: Mode
+          type: string
+          jsonPath: .status.controlMode
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - scaleTargetRef
+                - minReplicas
+                - maxReplicas
+                - metric
+                - slo
+                - policy
+                - prometheus
+              properties:
+                scaleTargetRef:
+                  type: object
+                  required:
+                    - apiVersion
+                    - kind
+                    - name
+                  properties:
+                    apiVersion:
+                      type: string
+                      minLength: 1
+                    kind:
+                      type: string
+                      minLength: 1
+                    name:
+                      type: string
+                      minLength: 1
+                minReplicas:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                maxReplicas:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                metric:
+                  type: object
+                  required:
+                    - prometheusQuery
+                  properties:
+                    prometheusQuery:
+                      type: string
+                      minLength: 1
+                slo:
+                  type: object
+                  required:
+                    - targetP95Milliseconds
+                  properties:
+                    targetP95Milliseconds:
+                      type: number
+                      format: double
+                      minimum: 0
+                policy:
+                  type: object
+                  required:
+                    - scaleUpThreshold
+                    - scaleDownThreshold
+                    - maxScaleUpStep
+                    - maxScaleDownStep
+                    - cooldownSeconds
+                  properties:
+                    scaleUpThreshold:
+                      type: number
+                      format: double
+                      minimum: 0
+                    scaleDownThreshold:
+                      type: number
+                      format: double
+                      minimum: 0
+                    maxScaleUpStep:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                    maxScaleDownStep:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                    cooldownSeconds:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                prometheus:
+                  type: object
+                  required:
+                    - address
+                  properties:
+                    address:
+                      type: string
+                      minLength: 1
+            status:
+              type: object
+              properties:
+                currentReplicas:
+                  type: integer
+                  format: int32
+                desiredReplicas:
+                  type: integer
+                  format: int32
+                observedMetric:
+                  type: number
+                  format: double
+                  nullable: true
+                controlMode:
+                  type: string
+                lastScaleTime:
+                  type: string
+                  format: date-time
+                  nullable: true
+                lastDecision:
+                  type: object
+                  nullable: true
+                  required:
+                    - id
+                    - timestamp
+                    - action
+                    - reason
+                    - currentReplicas
+                    - desiredReplicas
+                  properties:
+                    id:
+                      type: string
+                    timestamp:
+                      type: string
+                      format: date-time
+                    action:
+                      type: string
+                      enum:
+                        - SCALE_TARGET
+                        - HOLD
+                        - PROTECTED_MODE
+                    reason:
+                      type: string
+                    observedMetric:
+                      type: number
+                      format: double
+                      nullable: true
+                    threshold:
+                      type: number
+                      format: double
+                      nullable: true
+                    currentReplicas:
+                      type: integer
+                      format: int32
+                    desiredReplicas:
+                      type: integer
+                      format: int32
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

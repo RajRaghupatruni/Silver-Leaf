@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: optiscaler-controller
+  namespace: optiscale-system
+  labels:
+    app: optiscaler-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: optiscaler-controller
+  template:
+    metadata:
+      labels:
+        app: optiscaler-controller
+    spec:
+      serviceAccountName: optiscaler-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: optiscale/controller:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --watch-namespace=optiscale-demo
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=0
+          ports:
+            - name: health
+              containerPort: 8081
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health

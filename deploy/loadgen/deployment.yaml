@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-loadgen
+  namespace: optiscale-demo
+  labels:
+    app: demo-loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-loadgen
+  template:
+    metadata:
+      labels:
+        app: demo-loadgen
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loadgen
+          image: curlimages/curl:8.10.1
+          command: ["sh", "-c"]
+          args:
+            - while true; do i=1; while [ "$i" -le 20 ]; do curl -fsS http://demo-app.optiscale-demo.svc.cluster.local:8080/ >/dev/null & i=$((i+1)); done; wait; sleep 1; done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101

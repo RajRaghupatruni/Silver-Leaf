@@ -1,0 +1,25 @@
+apiVersion: optiscale.silver-leaf.io/v1alpha1
+kind: OptiScaler
+metadata:
+  name: demo-app
+  namespace: optiscale-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: demo-app
+  minReplicas: 1
+  maxReplicas: 5
+  metric:
+    # The demo app exposes request latency in seconds; convert p95 to milliseconds.
+    prometheusQuery: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-app"}[1m]))) * 1000
+  slo:
+    targetP95Milliseconds: 250
+  policy:
+    scaleUpThreshold: 250
+    scaleDownThreshold: 150
+    maxScaleUpStep: 1
+    maxScaleDownStep: 1
+    cooldownSeconds: 30
+  prometheus:
+    address: http://prometheus.optiscale-system.svc.cluster.local:9090

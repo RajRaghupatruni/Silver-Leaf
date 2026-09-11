@@ -1,0 +1,35 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: optiscaler-controller
+  namespace: optiscale-demo
+rules:
+  - apiGroups: ["optiscale.silver-leaf.io"]
+    resources: ["optiscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["optiscale.silver-leaf.io"]
+    resources: ["optiscalers/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: optiscaler-controller
+  namespace: optiscale-demo
+subjects:
+  - kind: ServiceAccount
+    name: optiscaler-controller
+    namespace: optiscale-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: optiscaler-controller
