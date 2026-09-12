@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: optiscale-system
+resources:
+  - grafana-deployment.yaml
+  - grafana-service.yaml
+configMapGenerator:
+  - name: grafana-provisioning
+    files:
+      - datasource.yaml=provisioning/datasource.yaml
+      - dashboard-provider.yaml=provisioning/dashboard-provider.yaml
+  - name: grafana-dashboard
+    files:
+      - optiscale-capacity-governor.json=dashboards/optiscale-capacity-governor.json
+generatorOptions:
+  disableNameSuffixHash: true

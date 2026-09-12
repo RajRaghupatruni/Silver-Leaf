@@ -1,0 +1,9 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: optiscale-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus.optiscale-system.svc.cluster.local:9090
+    isDefault: true
+    editable: false

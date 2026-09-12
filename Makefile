@@ -30,6 +30,7 @@ install:
 	kubectl apply -f config/prometheus/prometheus-rbac.yaml
 	kubectl apply -f config/prometheus/prometheus-config.yaml
 	kubectl apply -f config/prometheus/prometheus-deployment.yaml
+	kubectl apply -k deploy/grafana
 	kubectl apply -f deploy/postgres/configmap.yaml
 	kubectl apply -f deploy/postgres/service.yaml
 	kubectl apply -f deploy/postgres/deployment.yaml
@@ -51,6 +52,7 @@ status:
 
 uninstall:
 	kubectl delete -f deploy/loadgen/deployment.yaml --ignore-not-found=true
+	kubectl delete -k deploy/grafana --ignore-not-found=true
 	kubectl delete -f config/samples/optiscaler.yaml --ignore-not-found=true
 	kubectl delete -f config/manager/optiscaler-deployment.yaml --ignore-not-found=true
 	kubectl delete -f deploy/inventory/service.yaml --ignore-not-found=true

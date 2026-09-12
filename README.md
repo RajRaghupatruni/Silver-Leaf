@@ -13,7 +13,7 @@ load generator → demo-api → inventory-service → PostgreSQL
                     Deployment /scale + DecisionRecord
 ```
 
-The analyzer classifies evidence as `HEALTHY`, `TARGET_SATURATED`, `DEPENDENCY_SATURATED`, `CAPACITY_BLOCKED`, or `UNCERTAIN`. Reactive and dependency decisions take precedence over prediction; incomplete forecast inputs only suppress prescaling. The database scenario uses real inventory queries and application-observed database latency, errors, and in-flight query metrics; the query includes a configurable PostgreSQL `pg_sleep` delay for deterministic local testing. These measurements do not claim database CPU or internal wait-state telemetry. Histories and empirical capacity evidence are controller-local and reset on restart. No Random Forest, persistent learning, OpenTelemetry, Grafana, Karpenter, replay, or sophisticated optimization is implemented.
+The analyzer classifies evidence as `HEALTHY`, `TARGET_SATURATED`, `DEPENDENCY_SATURATED`, `CAPACITY_BLOCKED`, or `UNCERTAIN`. Reactive and dependency decisions take precedence over prediction; incomplete forecast inputs only suppress prescaling. The database scenario uses real inventory queries and application-observed database latency, errors, and in-flight query metrics; the query includes a configurable PostgreSQL `pg_sleep` delay for deterministic local testing. These measurements do not claim database CPU or internal wait-state telemetry. Histories and empirical capacity evidence are controller-local and reset on restart. Grafana OSS is provided as a local, read-only visualization layer; it does not feed controller decisions. No Random Forest, persistent learning, OpenTelemetry, Karpenter, replay, or sophisticated optimization is implemented.
 
 ## Run locally with Minikube
 
@@ -104,6 +104,27 @@ kubectl apply -f deploy/loadgen/deployment.yaml
 ```
 
 Reapplying `deploy/inventory/deployment.yaml` restores `INVENTORY_DB_DELAY_MS=0` and baseline inventory settings.
+
+### Grafana demo dashboard
+
+`make install` provisions Grafana OSS and the `OptiScale Capacity Governor` dashboard from checked-in configuration. To open it, run this helper in a PowerShell window and visit `http://localhost:3000`:
+
+```powershell
+.\deploy\grafana\open-dashboard.ps1
+```
+
+The helper waits for the Grafana Deployment and Service endpoints, then binds `kubectl port-forward` to loopback only. The local lab allows anonymous Viewer access; the Service is ClusterIP-only, and this is not an Internet-facing authentication model. Grafana's data directory is ephemeral; its Prometheus datasource and dashboard are reprovisioned from files after a pod restart.
+
+Dashboard panels:
+
+1. **Demand RPS** — observed demo-api request rate from `http_requests_total`.
+2. **p95 latency vs SLO** — demo-api p95 with a visible 250ms reference line.
+3. **Effective-serving replicas** — the same `>1 RPS over 30s` traffic-bearing definition used by OptiScale. This repository does not scrape kube-state-metrics, so requested and Kubernetes Ready replica series are unavailable in Prometheus; use `kubectl get deployment demo-api` for those values.
+4. **Concurrency slot occupancy** — aggregate and hottest traffic-bearing held-slot rates with the 15-slot safe operating boundary.
+5. **Success/error RPS** — a truthful substitute because forecast demand and realized safe capacity are currently exposed in OptiScaler status/DecisionRecord, not as Prometheus series. The dashboard does not fabricate or reconstruct those values.
+6. **Dependency health** — inventory HTTP p95 and application-observed PostgreSQL query p95.
+
+Grafana is for portfolio/demo observability only. Its panels do not supply inputs to the controller or change policy decisions; inspect the OptiScaler resource and controller logs for the actual forecast and DecisionRecord.
 
 ## Metrics and policy
 
