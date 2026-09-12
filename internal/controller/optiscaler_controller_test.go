@@ -60,6 +60,32 @@ func TestStatusDecisionRecordCreation(t *testing.T) {
 	}
 }
 
+func TestLastScaleDecisionSurvivesLaterHold(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := optiscalev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	scaled := &optiscalev1alpha1.DecisionRecord{ID: "scale-1", Action: optiscalev1alpha1.ActionScaleDependency, ChosenTarget: "inventory-service", Evidence: []string{"dependency p95 exceeded"}}
+	resource := &optiscalev1alpha1.OptiScaler{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "optiscale-demo"}, Spec: validSpec(), Status: optiscalev1alpha1.OptiScalerStatus{LastScaleDecision: scaled}}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&optiscalev1alpha1.OptiScaler{}).WithObjects(resource).Build()
+	r := &OptiScalerReconciler{Client: client, Scheme: scheme}
+	status := resource.Status
+	status.LastDecision = &optiscalev1alpha1.DecisionRecord{ID: "hold-1", Action: optiscalev1alpha1.ActionHold, Reason: "healthy"}
+	if err := r.updateStatus(context.Background(), resource, status); err != nil {
+		t.Fatal(err)
+	}
+	var got optiscalev1alpha1.OptiScaler
+	if err := client.Get(context.Background(), types.NamespacedName{Name: "demo", Namespace: "optiscale-demo"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.LastDecision == nil || got.Status.LastDecision.Action != optiscalev1alpha1.ActionHold {
+		t.Fatalf("latest decision not persisted: %+v", got.Status.LastDecision)
+	}
+	if got.Status.LastScaleDecision == nil || got.Status.LastScaleDecision.ID != "scale-1" {
+		t.Fatalf("last scaling decision was not retained: %+v", got.Status.LastScaleDecision)
+	}
+}
+
 func validSpec() optiscalev1alpha1.OptiScalerSpec {
 	return optiscalev1alpha1.OptiScalerSpec{
 		ScaleTargetRef: optiscalev1alpha1.ScaleTargetReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "demo"},

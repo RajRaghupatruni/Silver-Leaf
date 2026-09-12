@@ -8,7 +8,9 @@ import (
 	"time"
 
 	optiscalev1alpha1 "github.com/RajRaghupatruni/Silver-Leaf/api/v1alpha1"
+	"github.com/RajRaghupatruni/Silver-Leaf/internal/capacity"
 	"github.com/RajRaghupatruni/Silver-Leaf/internal/decision"
+	"github.com/RajRaghupatruni/Silver-Leaf/internal/observation"
 	"github.com/RajRaghupatruni/Silver-Leaf/internal/policy"
 	promclient "github.com/RajRaghupatruni/Silver-Leaf/internal/prometheus"
 	appsv1 "k8s.io/api/apps/v1"
@@ -39,6 +41,160 @@ type OptiScalerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+}
+
+type scaleEntry struct {
+	deployment *appsv1.Deployment
+	scale      autoscalingv1.Scale
+	key        types.NamespacedName
+}
+
+func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *optiscalev1alpha1.OptiScaler, status optiscalev1alpha1.OptiScalerStatus, targetDeployment *appsv1.Deployment, targetScale autoscalingv1.Scale, prom *promclient.Client) (reconcile.Result, error) {
+	now := time.Now().UTC()
+	targetEntry := scaleEntry{deployment: targetDeployment, scale: targetScale, key: types.NamespacedName{Namespace: targetDeployment.Namespace, Name: targetDeployment.Name}}
+	targetCurrent := targetScale.Spec.Replicas
+	status.CurrentReplicas = targetCurrent
+	status.DesiredReplicas = targetCurrent
+	snapshot := observation.Snapshot{
+		SLOTargetP95Milliseconds: resource.Spec.SLO.TargetP95Milliseconds,
+		Target: observation.TargetObservation{
+			CurrentReplicas:      targetCurrent,
+			P95Latency:           metricObservation(ctx, prom, resource.Spec.Metric.PrometheusQuery, now),
+			Utilization:          metricObservation(ctx, prom, resource.Spec.Metric.UtilizationQuery, now),
+			UtilizationThreshold: resource.Spec.Metric.UtilizationThreshold,
+		},
+	}
+	components := make(map[string]policy.ComponentInput, len(resource.Spec.Dependencies))
+	entries := map[string]scaleEntry{"target": targetEntry}
+	for _, dependency := range resource.Spec.Dependencies {
+		depDeployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: dependency.ScaleTargetRef.Name, Namespace: resource.Namespace}}
+		depKey := types.NamespacedName{Namespace: resource.Namespace, Name: dependency.ScaleTargetRef.Name}
+		var depScale autoscalingv1.Scale
+		depErr := r.SubResource("scale").Get(ctx, depDeployment, &depScale)
+		latency := metricObservation(ctx, prom, dependency.Metrics.LatencyQuery, now)
+		utilization := metricObservation(ctx, prom, dependency.Metrics.UtilizationQuery, now)
+		current := depScale.Spec.Replicas
+		if depErr != nil {
+			latency.Valid, latency.Fresh = false, false
+			utilization.Valid, utilization.Fresh = false, false
+			latency.Error = fmt.Sprintf("get dependency scale %s/%s: %v", depKey.Namespace, depKey.Name, depErr)
+		}
+		snapshot.Dependencies = append(snapshot.Dependencies, observation.DependencyObservation{
+			Name: dependency.Name, CurrentReplicas: current, P95Latency: latency, Utilization: utilization,
+			LatencyThreshold: dependency.Thresholds.LatencyMilliseconds, UtilizationThreshold: dependency.Thresholds.Utilization,
+			Scalable: dependency.Scalable, MinReplicas: dependency.MinReplicas, MaxReplicas: dependency.MaxReplicas,
+		})
+		components[dependency.Name] = policy.ComponentInput{Name: dependency.Name, CurrentReplicas: current, MinReplicas: dependency.MinReplicas, MaxReplicas: dependency.MaxReplicas, Scalable: dependency.Scalable}
+		entries[dependency.Name] = scaleEntry{deployment: depDeployment, scale: depScale, key: depKey}
+	}
+
+	analysis := capacity.Analyze(snapshot)
+	var lastScale *time.Time
+	if resource.Status.LastScaleTime != nil {
+		value := resource.Status.LastScaleTime.Time
+		lastScale = &value
+	}
+	policyDecision := policy.EvaluateCapacity(policy.CapacityInput{
+		Analysis:         analysis,
+		Target:           policy.ComponentInput{Name: "target", CurrentReplicas: targetCurrent, MinReplicas: resource.Spec.MinReplicas, MaxReplicas: resource.Spec.MaxReplicas, Scalable: true},
+		Dependencies:     components,
+		MaxScaleUpStep:   resource.Spec.Policy.MaxScaleUpStep,
+		MaxScaleDownStep: resource.Spec.Policy.MaxScaleDownStep,
+		Cooldown:         time.Duration(resource.Spec.Policy.CooldownSeconds) * time.Second,
+		LastScaleTime:    lastScale,
+		Now:              now,
+	})
+
+	entry := entries[policyDecision.ChosenComponent]
+	chosenTarget := entry.key.Name
+	var observedP95 *float64
+	var observedAt time.Time
+	if snapshot.Target.P95Latency.Valid {
+		observedP95 = float64Ptr(snapshot.Target.P95Latency.Value)
+		observedAt = snapshot.Target.P95Latency.ObservedAt
+	}
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	status.ObservedMetric = observedP95
+	if policyDecision.ChosenComponent == "target" {
+		status.CurrentReplicas = policyDecision.CurrentReplicas
+		status.DesiredReplicas = policyDecision.DesiredReplicas
+	}
+	status.ControlMode = controlMode(policyDecision.Action)
+	rejected := rejectedActions(policyDecision.Action)
+	recordInput := decision.Input{
+		Action: string(policyDecision.Action), Reason: policyDecision.Reason,
+		ObservedMetric: observedP95, CurrentReplicas: policyDecision.CurrentReplicas,
+		DesiredReplicas: policyDecision.DesiredReplicas, ObservedAt: observedAt,
+		SLOTargetP95Milliseconds:      resource.Spec.SLO.TargetP95Milliseconds,
+		ObservedTargetP95Milliseconds: observedP95,
+		DetectedBottleneck:            string(analysis.Classification), BottleneckComponent: analysis.Component,
+		Confidence: string(analysis.Confidence),
+		Evidence:   analysis.Evidence, ChosenTarget: chosenTarget, RejectedActions: rejected,
+	}
+	if policyDecision.HasThreshold {
+		recordInput.Threshold = float64Ptr(policyDecision.Threshold)
+	}
+	record := decision.NewRecord(recordInput)
+	status.LastDecision = record
+	setConditions(&status, resource.Generation, policyDecision.Action != policy.ActionProtectedMode, policyDecision.Action == policy.ActionProtectedMode, conditionReason(policy.Decision{Action: policyDecision.Action}), policyDecision.Reason)
+
+	if (policyDecision.Action == policy.ActionScaleTarget || policyDecision.Action == policy.ActionScaleDependency) && shouldUpdateScale(policyDecision.CurrentReplicas, policyDecision.DesiredReplicas) {
+		entry.scale.Spec.Replicas = policyDecision.DesiredReplicas
+		if err := r.SubResource("scale").Update(ctx, entry.deployment, client.WithSubResourceBody(&entry.scale)); err != nil {
+			return reconcile.Result{}, fmt.Errorf("update %s/%s scale: %w", entry.key.Namespace, entry.key.Name, err)
+		}
+		if policyDecision.ChosenComponent == "target" {
+			status.CurrentReplicas = policyDecision.DesiredReplicas
+			status.DesiredReplicas = policyDecision.DesiredReplicas
+		}
+		status.LastScaleTime = timePtr(now)
+		status.LastScaleDecision = record.DeepCopy()
+		if r.Recorder != nil {
+			reason := "ScaleTarget"
+			if policyDecision.Action == policy.ActionScaleDependency {
+				reason = "ScaleDependency"
+			}
+			r.Recorder.Eventf(resource, corev1.EventTypeNormal, reason, "Scaled %s/%s from %d to %d: %s", entry.key.Namespace, entry.key.Name, policyDecision.CurrentReplicas, policyDecision.DesiredReplicas, policyDecision.Reason)
+		}
+	}
+	log.FromContext(ctx).Info("capacity decision", "target", resource.Spec.ScaleTargetRef.Name, "targetP95Milliseconds", metricLogValue(snapshot.Target.P95Latency), "sloTargetP95Milliseconds", resource.Spec.SLO.TargetP95Milliseconds, "bottleneck", analysis.Classification, "component", analysis.Component, "action", policyDecision.Action, "chosenWorkload", chosenTarget, "currentReplicas", policyDecision.CurrentReplicas, "desiredReplicas", policyDecision.DesiredReplicas, "reason", policyDecision.Reason)
+	return reconcile.Result{RequeueAfter: reconcileInterval}, r.updateStatus(ctx, resource, status)
+}
+
+func metricObservation(ctx context.Context, prom *promclient.Client, query string, now time.Time) observation.Metric {
+	if strings.TrimSpace(query) == "" {
+		return observation.Metric{Error: "Prometheus query is missing"}
+	}
+	value, err := prom.Query(ctx, query)
+	if err != nil {
+		return observation.Metric{Error: err.Error()}
+	}
+	metric := observation.Metric{Value: value.Value, ObservedAt: value.Timestamp, Valid: true}
+	metric.Fresh = !value.Timestamp.After(now.Add(30*time.Second)) && now.Sub(value.Timestamp) <= maxTelemetryAge
+	if !metric.Fresh {
+		metric.Error = "telemetry is stale or timestamp is in the future"
+	}
+	return metric
+}
+
+func metricLogValue(metric observation.Metric) any {
+	if !metric.Valid {
+		return nil
+	}
+	return metric.Value
+}
+
+func rejectedActions(chosen policy.Action) []string {
+	switch chosen {
+	case policy.ActionScaleTarget:
+		return []string{string(policy.ActionScaleDependency)}
+	case policy.ActionScaleDependency:
+		return []string{string(policy.ActionScaleTarget)}
+	default:
+		return []string{string(policy.ActionScaleTarget), string(policy.ActionScaleDependency)}
+	}
 }
 
 func (r *OptiScalerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -77,6 +233,9 @@ func (r *OptiScalerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	prom, err := promclient.NewClient(resource.Spec.Prometheus.Address, 10*time.Second)
 	if err != nil {
 		return reconcile.Result{RequeueAfter: reconcileInterval}, r.protectedStatus(ctx, &resource, status, err.Error())
+	}
+	if resource.Spec.Metric.UtilizationQuery != "" || len(resource.Spec.Dependencies) > 0 {
+		return r.reconcileCapacity(ctx, &resource, status, deployment, scale, prom)
 	}
 	observation, err := prom.Query(ctx, resource.Spec.Metric.PrometheusQuery)
 	if err != nil {
@@ -124,6 +283,7 @@ func (r *OptiScalerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		status.CurrentReplicas = policyDecision.DesiredReplicas
 		status.DesiredReplicas = policyDecision.DesiredReplicas
 		status.LastScaleTime = timePtr(now)
+		status.LastScaleDecision = status.LastDecision.DeepCopy()
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&resource, corev1.EventTypeNormal, "ScaleTarget", "Scaled %s/%s from %d to %d: %s", targetKey.Namespace, targetKey.Name, current, policyDecision.DesiredReplicas, policyDecision.Reason)
 		}
@@ -172,6 +332,12 @@ func validateSpec(spec optiscalev1alpha1.OptiScalerSpec) error {
 	if strings.TrimSpace(spec.Metric.PrometheusQuery) == "" {
 		return fmt.Errorf("metric.prometheusQuery is required")
 	}
+	if len(spec.Dependencies) > 0 && strings.TrimSpace(spec.Metric.UtilizationQuery) == "" {
+		return fmt.Errorf("metric.utilizationQuery is required when dependencies are configured")
+	}
+	if spec.Metric.UtilizationQuery != "" && (math.IsNaN(spec.Metric.UtilizationThreshold) || math.IsInf(spec.Metric.UtilizationThreshold, 0) || spec.Metric.UtilizationThreshold < 0) {
+		return fmt.Errorf("metric.utilizationThreshold must be finite and nonnegative")
+	}
 	if math.IsNaN(spec.SLO.TargetP95Milliseconds) || math.IsInf(spec.SLO.TargetP95Milliseconds, 0) || spec.SLO.TargetP95Milliseconds < 0 {
 		return fmt.Errorf("slo.targetP95Milliseconds must be finite and nonnegative")
 	}
@@ -186,6 +352,34 @@ func validateSpec(spec optiscalev1alpha1.OptiScalerSpec) error {
 	}
 	if strings.TrimSpace(spec.Prometheus.Address) == "" {
 		return fmt.Errorf("prometheus.address is required")
+	}
+	seen := map[string]struct{}{}
+	for _, dependency := range spec.Dependencies {
+		if strings.TrimSpace(dependency.Name) == "" || strings.TrimSpace(dependency.ScaleTargetRef.Name) == "" {
+			return fmt.Errorf("dependency name and scaleTargetRef.name are required")
+		}
+		if dependency.ScaleTargetRef.APIVersion != "apps/v1" || dependency.ScaleTargetRef.Kind != "Deployment" {
+			return fmt.Errorf("dependency %q must reference apps/v1 Deployment", dependency.Name)
+		}
+		if _, exists := seen[dependency.Name]; exists {
+			return fmt.Errorf("dependency name %q is duplicated", dependency.Name)
+		}
+		if dependency.Name == "target" {
+			return fmt.Errorf("dependency name \"target\" is reserved")
+		}
+		seen[dependency.Name] = struct{}{}
+		if dependency.MinReplicas < 1 || dependency.MaxReplicas < dependency.MinReplicas {
+			return fmt.Errorf("dependency %q has invalid replica bounds", dependency.Name)
+		}
+		if dependency.ScaleTargetRef.Name == spec.ScaleTargetRef.Name {
+			return fmt.Errorf("dependency %q cannot be the primary scale target", dependency.Name)
+		}
+		if strings.TrimSpace(dependency.Metrics.LatencyQuery) == "" || strings.TrimSpace(dependency.Metrics.UtilizationQuery) == "" {
+			return fmt.Errorf("dependency %q metric queries are required", dependency.Name)
+		}
+		if math.IsNaN(dependency.Thresholds.LatencyMilliseconds) || math.IsInf(dependency.Thresholds.LatencyMilliseconds, 0) || dependency.Thresholds.LatencyMilliseconds < 0 || math.IsNaN(dependency.Thresholds.Utilization) || math.IsInf(dependency.Thresholds.Utilization, 0) || dependency.Thresholds.Utilization < 0 {
+			return fmt.Errorf("dependency %q thresholds must be finite and nonnegative", dependency.Name)
+		}
 	}
 	return nil
 }

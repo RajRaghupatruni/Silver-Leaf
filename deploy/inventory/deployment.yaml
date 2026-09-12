@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: demo-api
+  name: inventory-service
   namespace: optiscale-demo
   labels:
-    app: demo-api
+    app: inventory-service
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: demo-api
+      app: inventory-service
   template:
     metadata:
       labels:
-        app: demo-api
+        app: inventory-service
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/path: /metrics
@@ -24,19 +24,17 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: demo-api
-          image: optiscale/demo-app:dev
+        - name: inventory-service
+          image: optiscale/inventory-service:dev
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
           env:
-            - name: DEMO_WORK_MS
+            - name: INVENTORY_WORK_MS
               value: "25"
-            - name: DEMO_CONCURRENCY
+            - name: INVENTORY_CONCURRENCY
               value: "20"
-            - name: INVENTORY_SERVICE_URL
-              value: http://inventory-service.optiscale-demo.svc.cluster.local:8080/inventory
           resources:
             requests:
               cpu: 50m

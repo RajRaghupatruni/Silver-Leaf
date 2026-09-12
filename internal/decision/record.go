@@ -12,30 +12,46 @@ import (
 )
 
 type Input struct {
-	Action          string
-	Reason          string
-	ObservedMetric  *float64
-	Threshold       *float64
-	CurrentReplicas int32
-	DesiredReplicas int32
-	ObservedAt      time.Time
+	Action                        string
+	Reason                        string
+	ObservedMetric                *float64
+	Threshold                     *float64
+	CurrentReplicas               int32
+	DesiredReplicas               int32
+	ObservedAt                    time.Time
+	SLOTargetP95Milliseconds      float64
+	ObservedTargetP95Milliseconds *float64
+	DetectedBottleneck            string
+	BottleneckComponent           string
+	Confidence                    string
+	Evidence                      []string
+	ChosenTarget                  string
+	RejectedActions               []string
 }
 
 func NewRecord(in Input) *optiscalev1alpha1.DecisionRecord {
 	return &optiscalev1alpha1.DecisionRecord{
-		ID:              ID(in),
-		Timestamp:       metav1.NewTime(time.Now().UTC()),
-		Action:          optiscalev1alpha1.Action(in.Action),
-		Reason:          in.Reason,
-		ObservedMetric:  in.ObservedMetric,
-		Threshold:       in.Threshold,
-		CurrentReplicas: in.CurrentReplicas,
-		DesiredReplicas: in.DesiredReplicas,
+		ID:                            ID(in),
+		Timestamp:                     metav1.NewTime(time.Now().UTC()),
+		Action:                        optiscalev1alpha1.Action(in.Action),
+		Reason:                        in.Reason,
+		ObservedMetric:                in.ObservedMetric,
+		Threshold:                     in.Threshold,
+		CurrentReplicas:               in.CurrentReplicas,
+		DesiredReplicas:               in.DesiredReplicas,
+		SLOTargetP95Milliseconds:      in.SLOTargetP95Milliseconds,
+		ObservedTargetP95Milliseconds: in.ObservedTargetP95Milliseconds,
+		DetectedBottleneck:            in.DetectedBottleneck,
+		BottleneckComponent:           in.BottleneckComponent,
+		Confidence:                    in.Confidence,
+		Evidence:                      append([]string(nil), in.Evidence...),
+		ChosenTarget:                  in.ChosenTarget,
+		RejectedActions:               append([]string(nil), in.RejectedActions...),
 	}
 }
 
 func ID(in Input) string {
-	value := fmt.Sprintf("%s|%s|%v|%v|%d|%d|%s", in.Action, in.Reason, pointerValue(in.ObservedMetric), pointerValue(in.Threshold), in.CurrentReplicas, in.DesiredReplicas, in.ObservedAt.UTC().Format(time.RFC3339Nano))
+	value := fmt.Sprintf("%s|%s|%v|%v|%d|%d|%s|%.4f|%v|%s|%s|%s|%s", in.Action, in.Reason, pointerValue(in.ObservedMetric), pointerValue(in.Threshold), in.CurrentReplicas, in.DesiredReplicas, in.ObservedAt.UTC().Format(time.RFC3339Nano), in.SLOTargetP95Milliseconds, pointerValue(in.ObservedTargetP95Milliseconds), in.DetectedBottleneck, in.BottleneckComponent, in.Confidence, in.ChosenTarget)
 	hash := sha256.Sum256([]byte(value))
 	return "dec-" + hex.EncodeToString(hash[:8]) + "-" + strconv.FormatInt(in.ObservedAt.Unix(), 10)
 }

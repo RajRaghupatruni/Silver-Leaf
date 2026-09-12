@@ -8,9 +8,10 @@ import (
 type Action string
 
 const (
-	ActionScaleTarget   Action = "SCALE_TARGET"
-	ActionHold          Action = "HOLD"
-	ActionProtectedMode Action = "PROTECTED_MODE"
+	ActionScaleTarget     Action = "SCALE_TARGET"
+	ActionScaleDependency Action = "SCALE_DEPENDENCY"
+	ActionHold            Action = "HOLD"
+	ActionProtectedMode   Action = "PROTECTED_MODE"
 )
 
 // ControlMode describes the safety mode used for the most recent evaluation.
@@ -38,6 +39,9 @@ type OptiScalerSpec struct {
 	SLO    SLOSpec    `json:"slo"`
 	Policy PolicySpec `json:"policy"`
 
+	// Dependencies are optional managed Deployment bottlenecks in the same namespace.
+	Dependencies []DependencySpec `json:"dependencies,omitempty"`
+
 	// Prometheus configures the Prometheus API used for observations.
 	Prometheus PrometheusSpec `json:"prometheus"`
 }
@@ -56,6 +60,40 @@ type MetricSpec struct {
 	// PrometheusQuery must return exactly one numeric instant-query result.
 	// +kubebuilder:validation:MinLength=1
 	PrometheusQuery string `json:"prometheusQuery"`
+	// UtilizationQuery is used by the capacity analyzer to identify target saturation.
+	UtilizationQuery string `json:"utilizationQuery,omitempty"`
+	// UtilizationThreshold is the target saturation boundary for UtilizationQuery.
+	// +kubebuilder:validation:Minimum=0
+	UtilizationThreshold float64 `json:"utilizationThreshold,omitempty"`
+}
+
+type DependencySpec struct {
+	// Name is the explainable dependency identifier.
+	// +kubebuilder:validation:MinLength=1
+	Name           string                   `json:"name"`
+	ScaleTargetRef ScaleTargetReference     `json:"scaleTargetRef"`
+	Metrics        DependencyMetricsSpec    `json:"metrics"`
+	Thresholds     DependencyThresholdsSpec `json:"thresholds"`
+	Scalable       bool                     `json:"scalable"`
+	// Dependency-specific safety bounds. The controller supports Deployment targets only.
+	// +kubebuilder:validation:Minimum=1
+	MinReplicas int32 `json:"minReplicas"`
+	// +kubebuilder:validation:Minimum=1
+	MaxReplicas int32 `json:"maxReplicas"`
+}
+
+type DependencyMetricsSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	LatencyQuery string `json:"latencyQuery"`
+	// +kubebuilder:validation:MinLength=1
+	UtilizationQuery string `json:"utilizationQuery"`
+}
+
+type DependencyThresholdsSpec struct {
+	// +kubebuilder:validation:Minimum=0
+	LatencyMilliseconds float64 `json:"latencyMilliseconds"`
+	// +kubebuilder:validation:Minimum=0
+	Utilization float64 `json:"utilization"`
 }
 
 type SLOSpec struct {
@@ -84,25 +122,34 @@ type PrometheusSpec struct {
 
 // DecisionRecord explains the latest policy evaluation.
 type DecisionRecord struct {
-	ID              string      `json:"id"`
-	Timestamp       metav1.Time `json:"timestamp"`
-	Action          Action      `json:"action"`
-	Reason          string      `json:"reason"`
-	ObservedMetric  *float64    `json:"observedMetric,omitempty"`
-	Threshold       *float64    `json:"threshold,omitempty"`
-	CurrentReplicas int32       `json:"currentReplicas"`
-	DesiredReplicas int32       `json:"desiredReplicas"`
+	ID                            string      `json:"id"`
+	Timestamp                     metav1.Time `json:"timestamp"`
+	Action                        Action      `json:"action"`
+	Reason                        string      `json:"reason"`
+	ObservedMetric                *float64    `json:"observedMetric,omitempty"`
+	Threshold                     *float64    `json:"threshold,omitempty"`
+	CurrentReplicas               int32       `json:"currentReplicas"`
+	DesiredReplicas               int32       `json:"desiredReplicas"`
+	SLOTargetP95Milliseconds      float64     `json:"sloTargetP95Milliseconds"`
+	ObservedTargetP95Milliseconds *float64    `json:"observedTargetP95Milliseconds,omitempty"`
+	DetectedBottleneck            string      `json:"detectedBottleneck,omitempty"`
+	BottleneckComponent           string      `json:"bottleneckComponent,omitempty"`
+	Confidence                    string      `json:"confidence,omitempty"`
+	Evidence                      []string    `json:"evidence,omitempty"`
+	ChosenTarget                  string      `json:"chosenTarget,omitempty"`
+	RejectedActions               []string    `json:"rejectedActions,omitempty"`
 }
 
 // OptiScalerStatus defines the observed state of an OptiScaler.
 type OptiScalerStatus struct {
-	CurrentReplicas int32              `json:"currentReplicas"`
-	DesiredReplicas int32              `json:"desiredReplicas"`
-	ObservedMetric  *float64           `json:"observedMetric,omitempty"`
-	ControlMode     ControlMode        `json:"controlMode,omitempty"`
-	LastScaleTime   *metav1.Time       `json:"lastScaleTime,omitempty"`
-	LastDecision    *DecisionRecord    `json:"lastDecision,omitempty"`
-	Conditions      []metav1.Condition `json:"conditions,omitempty"`
+	CurrentReplicas   int32              `json:"currentReplicas"`
+	DesiredReplicas   int32              `json:"desiredReplicas"`
+	ObservedMetric    *float64           `json:"observedMetric,omitempty"`
+	ControlMode       ControlMode        `json:"controlMode,omitempty"`
+	LastScaleTime     *metav1.Time       `json:"lastScaleTime,omitempty"`
+	LastDecision      *DecisionRecord    `json:"lastDecision,omitempty"`
+	LastScaleDecision *DecisionRecord    `json:"lastScaleDecision,omitempty"`
+	Conditions        []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

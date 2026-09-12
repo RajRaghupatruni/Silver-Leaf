@@ -12,10 +12,12 @@ build:
 docker-build: build
 	docker build -t optiscale/controller:dev -f Dockerfile.controller .
 	docker build -t optiscale/demo-app:dev -f Dockerfile.demo-app .
+	docker build -t optiscale/inventory-service:dev -f Dockerfile.inventory-service .
 
 minikube-load:
 	minikube image load optiscale/controller:dev
 	minikube image load optiscale/demo-app:dev
+	minikube image load optiscale/inventory-service:dev
 
 install:
 	kubectl apply -f deploy/namespace.yaml
@@ -25,6 +27,8 @@ install:
 	kubectl apply -f config/prometheus/prometheus-rbac.yaml
 	kubectl apply -f config/prometheus/prometheus-config.yaml
 	kubectl apply -f config/prometheus/prometheus-deployment.yaml
+	kubectl apply -f deploy/inventory/deployment.yaml
+	kubectl apply -f deploy/inventory/service.yaml
 	kubectl apply -f deploy/demo-app/deployment.yaml
 	kubectl apply -f deploy/demo-app/service.yaml
 	kubectl apply -f config/manager/optiscaler-deployment.yaml
@@ -43,6 +47,8 @@ uninstall:
 	kubectl delete -f deploy/loadgen/deployment.yaml --ignore-not-found=true
 	kubectl delete -f config/samples/optiscaler.yaml --ignore-not-found=true
 	kubectl delete -f config/manager/optiscaler-deployment.yaml --ignore-not-found=true
+	kubectl delete -f deploy/inventory/service.yaml --ignore-not-found=true
+	kubectl delete -f deploy/inventory/deployment.yaml --ignore-not-found=true
 	kubectl delete -f deploy/demo-app/service.yaml --ignore-not-found=true
 	kubectl delete -f deploy/demo-app/deployment.yaml --ignore-not-found=true
 	kubectl delete -f config/prometheus/prometheus-deployment.yaml --ignore-not-found=true
@@ -54,4 +60,4 @@ uninstall:
 	kubectl delete -f deploy/namespace.yaml --ignore-not-found=true
 
 generate:
-	@echo "The checked-in CRD is generated-style YAML for Vertical Slice 1."
+	@echo "The checked-in CRD is generated-style YAML for Vertical Slice 2."

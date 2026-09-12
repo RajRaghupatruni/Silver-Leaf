@@ -22,6 +22,21 @@ func (in *DecisionRecord) DeepCopyInto(out *DecisionRecord) {
 		*out = new(float64)
 		**out = **in
 	}
+	if in.ObservedTargetP95Milliseconds != nil {
+		in, out := &in.ObservedTargetP95Milliseconds, &out.ObservedTargetP95Milliseconds
+		*out = new(float64)
+		**out = **in
+	}
+	if in.Evidence != nil {
+		in, out := &in.Evidence, &out.Evidence
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.RejectedActions != nil {
+		in, out := &in.RejectedActions, &out.RejectedActions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 }
 
 func (in *DecisionRecord) DeepCopy() *DecisionRecord {
@@ -36,7 +51,36 @@ func (in *DecisionRecord) DeepCopy() *DecisionRecord {
 func (in *OptiScaler) DeepCopyInto(out *OptiScaler) {
 	*out = *in
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
 	in.Status.DeepCopyInto(&out.Status)
+}
+
+func (in *OptiScalerSpec) DeepCopyInto(out *OptiScalerSpec) {
+	*out = *in
+	if in.Dependencies != nil {
+		in, out := &in.Dependencies, &out.Dependencies
+		*out = make([]DependencySpec, len(*in))
+		copy(*out, *in)
+	}
+}
+
+func (in *OptiScalerSpec) DeepCopy() *OptiScalerSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(OptiScalerSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *DependencySpec) DeepCopyInto(out *DependencySpec) { *out = *in }
+func (in *DependencySpec) DeepCopy() *DependencySpec {
+	if in == nil {
+		return nil
+	}
+	out := new(DependencySpec)
+	in.DeepCopyInto(out)
+	return out
 }
 
 func (in *OptiScaler) DeepCopy() *OptiScaler {
@@ -96,6 +140,9 @@ func (in *OptiScalerStatus) DeepCopyInto(out *OptiScalerStatus) {
 	}
 	if in.LastDecision != nil {
 		out.LastDecision = in.LastDecision.DeepCopy()
+	}
+	if in.LastScaleDecision != nil {
+		out.LastScaleDecision = in.LastScaleDecision.DeepCopy()
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions

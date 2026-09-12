@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/RajRaghupatruni/Silver-Leaf/internal/capacity"
 )
 
 type Action string
 
 const (
-	ActionScaleTarget   Action = "SCALE_TARGET"
-	ActionHold          Action = "HOLD"
-	ActionProtectedMode Action = "PROTECTED_MODE"
+	ActionScaleTarget     Action = "SCALE_TARGET"
+	ActionScaleDependency Action = "SCALE_DEPENDENCY"
+	ActionHold            Action = "HOLD"
+	ActionProtectedMode   Action = "PROTECTED_MODE"
 )
 
 type Input struct {
@@ -29,6 +32,118 @@ type Input struct {
 	MaxScaleDownStep    int32
 	Cooldown            time.Duration
 	LastScaleTime       *time.Time
+}
+
+// ComponentInput contains the independent safety envelope for one scalable workload.
+type ComponentInput struct {
+	Name            string
+	CurrentReplicas int32
+	MinReplicas     int32
+	MaxReplicas     int32
+	Scalable        bool
+}
+
+type CapacityInput struct {
+	Analysis         capacity.Analysis
+	Target           ComponentInput
+	Dependencies     map[string]ComponentInput
+	MaxScaleUpStep   int32
+	MaxScaleDownStep int32
+	Cooldown         time.Duration
+	LastScaleTime    *time.Time
+	Now              time.Time
+}
+
+type CapacityDecision struct {
+	Action          Action
+	Reason          string
+	ChosenComponent string
+	CurrentReplicas int32
+	DesiredReplicas int32
+	Threshold       float64
+	HasThreshold    bool
+}
+
+// EvaluateCapacity maps an explainable bottleneck classification to one bounded mutation.
+// It never derives a replica value from invalid bounds and treats uncertain evidence as protected.
+func EvaluateCapacity(in CapacityInput) CapacityDecision {
+	decision := CapacityDecision{Action: ActionProtectedMode, ChosenComponent: in.Target.Name, CurrentReplicas: in.Target.CurrentReplicas, DesiredReplicas: in.Target.CurrentReplicas}
+	if in.Analysis.Classification == capacity.Uncertain {
+		decision.Reason = in.Analysis.Reason
+		return decision
+	}
+	if err := validateComponent(in.Target, in.MaxScaleUpStep, in.MaxScaleDownStep); err != nil {
+		decision.Reason = "invalid target configuration: " + err.Error()
+		return decision
+	}
+	if in.LastScaleTime != nil && in.Cooldown > 0 && in.Now.Before(in.LastScaleTime.Add(in.Cooldown)) {
+		decision.Action = ActionHold
+		decision.Reason = "cooldown active"
+		return decision
+	}
+	if in.Analysis.Classification == capacity.Healthy {
+		decision.Action = ActionHold
+		decision.Reason = in.Analysis.Reason
+		return decision
+	}
+
+	component := in.Target
+	if in.Analysis.Classification == capacity.DependencySaturated {
+		candidate, ok := in.Dependencies[in.Analysis.Component]
+		if !ok {
+			decision.Reason = fmt.Sprintf("dependency %q is not configured", in.Analysis.Component)
+			return decision
+		}
+		if !candidate.Scalable {
+			decision.ChosenComponent = candidate.Name
+			decision.CurrentReplicas = candidate.CurrentReplicas
+			decision.DesiredReplicas = candidate.CurrentReplicas
+			decision.Reason = fmt.Sprintf("dependency %q is saturated but not scalable", candidate.Name)
+			return decision
+		}
+		if err := validateComponent(candidate, in.MaxScaleUpStep, in.MaxScaleDownStep); err != nil {
+			decision.ChosenComponent = candidate.Name
+			decision.CurrentReplicas = candidate.CurrentReplicas
+			decision.DesiredReplicas = candidate.CurrentReplicas
+			decision.Reason = "invalid dependency configuration: " + err.Error()
+			return decision
+		}
+		component = candidate
+	}
+	decision.ChosenComponent = component.Name
+	decision.CurrentReplicas = component.CurrentReplicas
+	decision.DesiredReplicas = component.CurrentReplicas
+	if in.Analysis.Classification != capacity.TargetSaturated && in.Analysis.Classification != capacity.DependencySaturated {
+		decision.Action = ActionProtectedMode
+		decision.Reason = "unsupported capacity classification"
+		return decision
+	}
+	desired := component.CurrentReplicas + in.MaxScaleUpStep
+	if desired > component.MaxReplicas {
+		desired = component.MaxReplicas
+	}
+	if desired == component.CurrentReplicas {
+		decision.Action = ActionHold
+		decision.Reason = fmt.Sprintf("%s saturation signal present; maximum replicas already reached", component.Name)
+		return decision
+	}
+	decision.Action = ActionScaleTarget
+	if component.Name != in.Target.Name {
+		decision.Action = ActionScaleDependency
+	}
+	decision.DesiredReplicas = desired
+	decision.Reason = fmt.Sprintf("%s saturation signal present; scaling by bounded step", component.Name)
+	return decision
+}
+
+func validateComponent(component ComponentInput, up, down int32) error {
+	if component.MinReplicas < 1 || component.MaxReplicas < component.MinReplicas || component.CurrentReplicas < component.MinReplicas || component.CurrentReplicas > component.MaxReplicas {
+		return fmt.Errorf("invalid replica bounds")
+	}
+	if up < 1 || down < 1 {
+		return fmt.Errorf("scale steps must be at least 1")
+	}
+	return nil
 }
 
 type Decision struct {
