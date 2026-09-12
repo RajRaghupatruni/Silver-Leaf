@@ -62,13 +62,38 @@ Expected decision: `DEPENDENCY_SATURATED` and `SCALE_DEPENDENCY` for `inventory-
 
 Expected decision: `CAPACITY_BLOCKED` / `HOLD`, with `postgres` as the bottleneck. The API and inventory local-work signals stay below their thresholds while real inventory SQL calls wait inside PostgreSQL. Inventory request latency is recorded as downstream evidence, not treated as proof that adding inventory replicas helps. The decision should list rejected `SCALE_TARGET` and `SCALE_DEPENDENCY` actions. Confirm that both `demo-api` and `inventory-service` replica counts remain unchanged.
 
-Run the actual traffic ramp for predictive prescaling:
+### Predictive runtime proofs
+
+Two complementary Kubernetes-local k6 scenarios exercise predictive scaling. The success profile is the canonical end-to-end predictive demo; the original profile remains available as a capacity-realization guardrail case.
+
+#### Predictive success
+
+Run:
+
+```powershell
+.\deploy\scenarios\predictable-ramp-success.ps1
+```
+
+The pinned `grafana/k6:2.2.0` Job uses an open `ramping-arrival-rate` executor (one GET per scheduled iteration, 400 preallocated/max VUs): 200 RPS for 110 seconds (65 seconds of baseline validation with OptiScale stopped, then 45 seconds of controller warmup), a linear 200 -> 480 RPS ramp over 180 seconds, then a 480 RPS plateau for 45 seconds. It normally reuses HTTP connections, while approximately every 25th iteration per VU sends `Connection: close` to provide moderate, bounded connection turnover and opportunities for a newly added endpoint to receive fresh connections. This is a controlled demo traffic model, not a claim that production traffic generally has the same connection behavior. The Job fails on dropped iterations or an HTTP failure rate of 1% or more; the script requires a new high-quality `PRESCALE_TARGET`, a real Deployment `/scale` change from 2 -> 3, the third replica Ready below the 250ms SLO, and a new `PreScaleTarget` Event.
+
+Runtime evidence collected on 2026-09-12:
+
+- Baseline: about 200.03 RPS, p95 73.86ms, and 2 Ready / 2 effective-serving replicas; the safe occupancy boundary was 15 slots per replica.
+- The `PRESCALE_TARGET` decision was made while the target remained healthy: current/desired replicas 2/3, decision p95 93.08ms and live p95 94.77ms against the 250ms SLO. Predictive demand was 417.62 RPS; forecast demand was 496.65 RPS against 482.33 RPS realized current safe capacity (241.17 RPS per serving replica). The forecast slope was +1.5528 RPS/s^2, R^2 was 0.9999956, and confidence was HIGH. The 51-second planning horizon was 21 seconds measured readiness + 15 seconds control-loop allowance + 15 seconds demand-observation lag. Ready/effective-serving replicas at the decision were 2/2.
+- The real scale request took demo-api from 2 to 3. The third replica became Ready at about 97.28ms p95, and effective-serving count also reached 3. Later samples were about 454 RPS / 96.87ms p95, 468 RPS / 96.20ms, and 476 RPS / 93.56ms, with 3 Ready / 3 effective-serving replicas. Realized safe capacity rose to about 712-724 RPS; the controller then correctly held at 3 rather than scaling further.
+- k6 completed 104,795 requests with 0 dropped iterations, 0 HTTP failures, and overall p95 about 86.63ms.
+
+This run is the end-to-end proof that forecast-driven prescaling requested bounded capacity early enough, the new replica became traffic-bearing, and the SLO remained healthy in this controlled scenario. It does not establish that arbitrary production traffic will distribute connections the same way.
+
+#### Capacity-realization guard
+
+Run the original scenario:
 
 ```powershell
 .\deploy\scenarios\predictable-ramp.ps1
 ```
 
-The scenario restores the calibrated healthy target/dependency settings and runs a Kubernetes-local `grafana/k6:2.2.0` Job using an open `ramping-arrival-rate` executor (one GET per scheduled iteration; 400 preallocated/max VUs). It holds 200 RPS for 110 seconds (65 seconds for baseline validation with OptiScale stopped, then 45 seconds for clean controller samples), ramps linearly from 200 to 480 RPS over 180 seconds, and holds 480 RPS for 45 seconds. The 200 RPS baseline is a runtime-proven healthy capacity-learning point; the 450 RPS region approaches the measured 2-replica safe-capacity/SLO boundary, so the gradual ramp gives the unchanged forecast window and 15-second controller cadence time to observe rising demand before that boundary. The final plateau preserves a post-prescale observation window. The job fails on dropped arrivals or a 1% HTTP failure rate. The PowerShell script succeeds only for a new, high-quality `PRESCALE_TARGET` before the 250ms SLO is reached, with the real 2→3 Deployment scale, all three target replicas Ready before the SLO boundary, and a new `PreScaleTarget` Event verified. It prints and records both decision and readiness-proof state, then retains the Job and its logs for inspection. No host k6 installation or forecast-metric injection is used; end-to-end prescaling is established only by observing the run in Minikube.
+Keep this as a distinct guardrail/capacity-realization test, not as an obsolete or failed copy of the success proof. With normal long-lived connection reuse, Kubernetes may report 3 Ready replicas after a 2 -> 3 scale while recent request telemetry still shows only 2 effective-serving replicas. Connection reuse or traffic distribution can plausibly produce that observation; this scenario does not identify a definitive cause. OptiScale does not credit every Ready pod as useful capacity and holds further target scaling/prescaling while Ready exceeds effective-serving replicas, avoiding blind 3 -> 4 -> 5 scale-ups. This profile may cross the SLO; its purpose is to exercise the capacity-realization guard, not to prove SLO preservation.
 
 Restore baseline settings by reapplying the deployment manifests and restarting load generation:
 

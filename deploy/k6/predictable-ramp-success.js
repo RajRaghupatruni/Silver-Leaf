@@ -31,7 +31,7 @@ export const options = {
   },
 };
 
-console.log(`Connection-churn predictive profile: 200 RPS for 110s, ramp 200->480 RPS over 180s, hold 480 RPS for 45s; URL=${targetURL}`);
+console.log(`Moderate-rotation predictive success profile: 200 RPS for 110s, ramp 200->480 RPS over 180s, hold 480 RPS for 45s; URL=${targetURL}`);
 
 export default function () {
   const params = { timeout: '5s' };
