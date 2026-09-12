@@ -1,6 +1,7 @@
 package observation
 
 import (
+	"fmt"
 	"math"
 	"time"
 )
@@ -92,12 +93,57 @@ func rateUsable(metric Metric) bool {
 func invalidRate(reason string) Metric { return Metric{Error: reason} }
 
 type TargetObservation struct {
-	Name                 string
-	CurrentReplicas      int32
-	P95Latency           Metric
-	Utilization          Metric
-	UtilizationThreshold float64
-	RequestRates         RequestRates
+	Name                     string
+	CurrentReplicas          int32
+	ReadyReplicas            int32
+	P95Latency               Metric
+	AggregateSlotOccupancy   Metric
+	HottestReplicaOccupancy  Metric
+	EffectiveServingReplicas Metric
+	PhysicalConcurrencyLimit float64
+	SafeOperatingOccupancy   float64
+	RequestRates             RequestRates
+	// PredictiveRequestRate is a distinct, faster target demand observation used only for trend forecasting.
+	PredictiveRequestRate Metric
+}
+
+// EffectiveReplicaCount validates the Prometheus-derived count and prevents a
+// malformed or impossible serving-replica observation from entering policy.
+func EffectiveReplicaCount(metric Metric, readyReplicas int32) (int32, error) {
+	metric = validateRate(metric, "effective serving replica count")
+	if !rateUsable(metric) {
+		return 0, fmt.Errorf("%s", metric.Error)
+	}
+	if math.Trunc(metric.Value) != metric.Value || metric.Value > math.MaxInt32 {
+		return 0, fmt.Errorf("effective serving replica count must be an integer in [0,%d]", readyReplicas)
+	}
+	count := int32(metric.Value)
+	if count > readyReplicas {
+		return 0, fmt.Errorf("effective serving replicas %d exceed Kubernetes Ready replicas %d", count, readyReplicas)
+	}
+	return count, nil
+}
+
+// MeanSlotOccupancy divides deployment-wide held-slot occupancy by replicas
+// that actually receive meaningful traffic, never by Ready pods alone.
+func MeanSlotOccupancy(aggregate, effectiveReplicas Metric, readyReplicas int32) Metric {
+	count, err := EffectiveReplicaCount(effectiveReplicas, readyReplicas)
+	if err != nil {
+		return invalidRate(err.Error())
+	}
+	if count == 0 {
+		return invalidRate("target has no traffic-bearing replicas for slot-occupancy normalization")
+	}
+	aggregate = validateRate(aggregate, "aggregate concurrency-slot occupancy")
+	if !rateUsable(aggregate) {
+		return aggregate
+	}
+	normalized := aggregate.Value / float64(count)
+	if math.IsNaN(normalized) || math.IsInf(normalized, 0) {
+		return invalidRate("normalized target slot occupancy is non-finite")
+	}
+	aggregate.Value = normalized
+	return aggregate
 }
 
 type DependencyObservation struct {

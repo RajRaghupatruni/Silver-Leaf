@@ -10,6 +10,7 @@ type Action string
 const (
 	ActionScaleTarget     Action = "SCALE_TARGET"
 	ActionScaleDependency Action = "SCALE_DEPENDENCY"
+	ActionPrescaleTarget  Action = "PRESCALE_TARGET"
 	ActionHold            Action = "HOLD"
 	ActionProtectedMode   Action = "PROTECTED_MODE"
 )
@@ -44,6 +45,9 @@ type OptiScalerSpec struct {
 
 	// Prometheus configures the Prometheus API used for observations.
 	Prometheus PrometheusSpec `json:"prometheus"`
+
+	// Prediction enables conservative, explainable target prescaling from observed request-rate history.
+	Prediction PredictionSpec `json:"prediction,omitempty"`
 }
 
 // ScaleTargetReference identifies a supported Kubernetes workload.
@@ -60,15 +64,30 @@ type MetricSpec struct {
 	// PrometheusQuery must return exactly one numeric instant-query result.
 	// +kubebuilder:validation:MinLength=1
 	PrometheusQuery string `json:"prometheusQuery"`
-	// UtilizationQuery is used by the capacity analyzer to identify target saturation.
+	// UtilizationQuery supplies aggregate target concurrency-slot occupancy (slot-seconds/second).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	UtilizationQuery string `json:"utilizationQuery,omitempty"`
-	// UtilizationThreshold is the target saturation boundary for UtilizationQuery.
-	// +kubebuilder:validation:Minimum=0
-	UtilizationThreshold float64 `json:"utilizationThreshold,omitempty"`
+	// HottestReplicaUtilizationQuery returns the highest per-instance concurrency-slot occupancy.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	HottestReplicaUtilizationQuery string `json:"hottestReplicaUtilizationQuery"`
+	// ServingReplicaCountQuery returns the number of instances with meaningful recent request traffic.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ServingReplicaCountQuery string `json:"servingReplicaCountQuery"`
+	// PhysicalConcurrencyLimit is the actual semaphore slot limit per target pod; the configured
+	// prediction safety margin derives the safe operating occupancy from this physical ceiling.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	PhysicalConcurrencyLimit float64 `json:"physicalConcurrencyLimit"`
 	// RequestRateQuery returns total requests per second from a monotonically increasing counter.
 	RequestRateQuery string `json:"requestRateQuery,omitempty"`
 	// ErrorRequestRateQuery returns failed requests per second from a monotonically increasing counter.
 	ErrorRequestRateQuery string `json:"errorRequestRateQuery,omitempty"`
+	// PredictiveRequestRateQuery returns the target's faster demand-rate estimate used only for trend forecasting.
+	// +kubebuilder:validation:MinLength=1
+	PredictiveRequestRateQuery string `json:"predictiveRequestRateQuery,omitempty"`
 }
 
 type DependencySpec struct {
@@ -130,6 +149,24 @@ type PrometheusSpec struct {
 	Address string `json:"address"`
 }
 
+// PredictionSpec configures the optional P0 predictive capacity advisory.
+type PredictionSpec struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// SafeCapacityMargin is a fraction in (0,1] applied to empirically observed per-replica throughput.
+	// +kubebuilder:validation:Minimum=0.000001
+	// +kubebuilder:validation:Maximum=1
+	SafeCapacityMargin float64 `json:"safeCapacityMargin,omitempty"`
+	// MaxErrorRate is the largest observed error ratio accepted for healthy-capacity learning.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1
+	MaxErrorRate float64 `json:"maxErrorRate,omitempty"`
+	// PredictiveDemandWindowSeconds is the rate() window used by PredictiveRequestRateQuery.
+	// The forecast model derives observation lag as half this configured window.
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=120
+	PredictiveDemandWindowSeconds int32 `json:"predictiveDemandWindowSeconds,omitempty"`
+}
+
 // DecisionRecord explains the latest policy evaluation.
 type DecisionRecord struct {
 	ID                            string      `json:"id"`
@@ -147,14 +184,47 @@ type DecisionRecord struct {
 	// TargetSuccessfulRequestRate is successful requests per second, derived from total minus errors.
 	TargetSuccessfulRequestRate *float64 `json:"targetSuccessfulRequestRate,omitempty"`
 	// TargetErrorRate is error RPS / total RPS, a ratio in [0,1]; absent when undefined or unavailable.
-	TargetErrorRate        *float64                `json:"targetErrorRate,omitempty"`
-	DependencyRequestRates []DependencyRequestRate `json:"dependencyRequestRates,omitempty"`
-	DetectedBottleneck     string                  `json:"detectedBottleneck,omitempty"`
-	BottleneckComponent    string                  `json:"bottleneckComponent,omitempty"`
-	Confidence             string                  `json:"confidence,omitempty"`
-	Evidence               []string                `json:"evidence,omitempty"`
-	ChosenTarget           string                  `json:"chosenTarget,omitempty"`
-	RejectedActions        []string                `json:"rejectedActions,omitempty"`
+	TargetErrorRate *float64 `json:"targetErrorRate,omitempty"`
+	// PredictiveRequestRate is the current target rate observed from the separately configured fast demand query.
+	PredictiveRequestRate         *float64                `json:"predictiveRequestRate,omitempty"`
+	PredictiveDemandWindowSeconds *float64                `json:"predictiveDemandWindowSeconds,omitempty"`
+	DemandObservationLagSeconds   *float64                `json:"demandObservationLagSeconds,omitempty"`
+	DependencyRequestRates        []DependencyRequestRate `json:"dependencyRequestRates,omitempty"`
+	ForecastRequestRate           *float64                `json:"forecastRequestRate,omitempty"`
+	// ForecastHorizonSeconds is measured readiness + control-loop allowance + predictive-demand observation lag.
+	ForecastHorizonSeconds *float64 `json:"forecastHorizonSeconds,omitempty"`
+	RequestRateSlope       *float64 `json:"requestRateSlope,omitempty"`
+	ForecastConfidence     string   `json:"forecastConfidence,omitempty"`
+	ForecastFitR2          *float64 `json:"forecastFitR2,omitempty"`
+	// SafePerReplicaCapacity is safe throughput per traffic-bearing replica, after the configured margin.
+	SafePerReplicaCapacity *float64 `json:"safePerReplicaCapacity,omitempty"`
+	// CurrentSafeCapacity credits only traffic-bearing replicas, not every Kubernetes Ready pod.
+	CurrentSafeCapacity *float64 `json:"currentSafeCapacity,omitempty"`
+	// ReadyReplicas counts Kubernetes Ready target pods; readiness alone is not realized capacity.
+	ReadyReplicas int32 `json:"readyReplicas"`
+	// EffectiveServingReplicas is the Prometheus-derived count of traffic-bearing target instances.
+	EffectiveServingReplicas               *int32   `json:"effectiveServingReplicas,omitempty"`
+	AggregateConcurrencySlotOccupancy      *float64 `json:"aggregateConcurrencySlotOccupancy,omitempty"`
+	HottestReplicaConcurrencySlotOccupancy *float64 `json:"hottestReplicaConcurrencySlotOccupancy,omitempty"`
+	PhysicalConcurrencyLimit               *float64 `json:"physicalConcurrencyLimit,omitempty"`
+	SafeOperatingOccupancy                 *float64 `json:"safeOperatingOccupancy,omitempty"`
+	// ReadinessLeadTimeSeconds is the measured Pod creation-to-Ready duration.
+	ReadinessLeadTimeSeconds *float64 `json:"readinessLeadTimeSeconds,omitempty"`
+	// ReadinessEvidenceSource indicates whether prediction used a current fresh sample or persisted learned evidence.
+	// +kubebuilder:validation:Enum=CURRENT_FRESH_SAMPLE;PERSISTED_LEARNED_SAMPLE
+	ReadinessEvidenceSource ReadinessEvidenceSource `json:"readinessEvidenceSource,omitempty"`
+	// ReadinessTemplateIdentity is the Kubernetes pod-template-hash associated with the readiness evidence.
+	ReadinessTemplateIdentity string `json:"readinessTemplateIdentity,omitempty"`
+	// ControlLoopAllowanceSeconds is the reconcile interval included in the planning horizon.
+	ControlLoopAllowanceSeconds *float64 `json:"controlLoopAllowanceSeconds,omitempty"`
+	PredictionAccepted          *bool    `json:"predictionAccepted,omitempty"`
+	PredictionRejectedReason    string   `json:"predictionRejectedReason,omitempty"`
+	DetectedBottleneck          string   `json:"detectedBottleneck,omitempty"`
+	BottleneckComponent         string   `json:"bottleneckComponent,omitempty"`
+	Confidence                  string   `json:"confidence,omitempty"`
+	Evidence                    []string `json:"evidence,omitempty"`
+	ChosenTarget                string   `json:"chosenTarget,omitempty"`
+	RejectedActions             []string `json:"rejectedActions,omitempty"`
 }
 
 // DependencyRequestRate summarizes rate observations for a configured dependency.
@@ -166,16 +236,30 @@ type DependencyRequestRate struct {
 	ErrorRate             *float64 `json:"errorRate,omitempty"`
 }
 
+// ReadinessEvidenceSource identifies which revision-bound startup measurement informed prediction.
+type ReadinessEvidenceSource string
+
+const (
+	ReadinessEvidenceCurrentFreshSample     ReadinessEvidenceSource = "CURRENT_FRESH_SAMPLE"
+	ReadinessEvidencePersistedLearnedSample ReadinessEvidenceSource = "PERSISTED_LEARNED_SAMPLE"
+)
+
 // OptiScalerStatus defines the observed state of an OptiScaler.
 type OptiScalerStatus struct {
-	CurrentReplicas   int32              `json:"currentReplicas"`
-	DesiredReplicas   int32              `json:"desiredReplicas"`
-	ObservedMetric    *float64           `json:"observedMetric,omitempty"`
-	ControlMode       ControlMode        `json:"controlMode,omitempty"`
-	LastScaleTime     *metav1.Time       `json:"lastScaleTime,omitempty"`
-	LastDecision      *DecisionRecord    `json:"lastDecision,omitempty"`
-	LastScaleDecision *DecisionRecord    `json:"lastScaleDecision,omitempty"`
-	Conditions        []metav1.Condition `json:"conditions,omitempty"`
+	CurrentReplicas   int32           `json:"currentReplicas"`
+	DesiredReplicas   int32           `json:"desiredReplicas"`
+	ObservedMetric    *float64        `json:"observedMetric,omitempty"`
+	ControlMode       ControlMode     `json:"controlMode,omitempty"`
+	LastScaleTime     *metav1.Time    `json:"lastScaleTime,omitempty"`
+	LastDecision      *DecisionRecord `json:"lastDecision,omitempty"`
+	LastScaleDecision *DecisionRecord `json:"lastScaleDecision,omitempty"`
+	// LearnedReadinessLeadTimeSeconds is the last valid conservative startup sample for the identified target revision.
+	LearnedReadinessLeadTimeSeconds *float64 `json:"learnedReadinessLeadTimeSeconds,omitempty"`
+	// LearnedReadinessObservedAt is the Ready transition time of the sample that established the learned lead time.
+	LearnedReadinessObservedAt *metav1.Time `json:"learnedReadinessObservedAt,omitempty"`
+	// LearnedReadinessTemplateIdentity is the Kubernetes pod-template-hash for the revision that produced the sample.
+	LearnedReadinessTemplateIdentity string             `json:"learnedReadinessTemplateIdentity,omitempty"`
+	Conditions                       []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

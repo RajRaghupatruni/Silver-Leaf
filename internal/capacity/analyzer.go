@@ -39,11 +39,18 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 	if !finiteNonnegative(snapshot.SLOTargetP95Milliseconds) {
 		return uncertain("invalid SLO target", "slo.targetP95Milliseconds is invalid")
 	}
-	if !usable(snapshot.Target.P95Latency) || !usable(snapshot.Target.Utilization) {
-		return uncertain("target", metricReason("target telemetry is incomplete", snapshot.Target.P95Latency, snapshot.Target.Utilization))
+	if !usable(snapshot.Target.P95Latency) || !usable(snapshot.Target.HottestReplicaOccupancy) || !usable(snapshot.Target.EffectiveServingReplicas) {
+		return uncertain("target", metricReason("target telemetry is incomplete", snapshot.Target.P95Latency, snapshot.Target.HottestReplicaOccupancy, snapshot.Target.EffectiveServingReplicas))
 	}
-	if !finiteNonnegative(snapshot.Target.UtilizationThreshold) {
-		return uncertain("target", "target utilization threshold is invalid")
+	if _, err := observation.EffectiveReplicaCount(snapshot.Target.EffectiveServingReplicas, snapshot.Target.ReadyReplicas); err != nil {
+		return uncertain("target", err.Error())
+	}
+	if snapshot.Target.ReadyReplicas <= 0 {
+		return uncertain("target", "target has no Kubernetes Ready replicas for capacity analysis")
+	}
+	if !finiteNonnegative(snapshot.Target.SafeOperatingOccupancy) || snapshot.Target.SafeOperatingOccupancy <= 0 ||
+		!finiteNonnegative(snapshot.Target.PhysicalConcurrencyLimit) || snapshot.Target.PhysicalConcurrencyLimit < snapshot.Target.SafeOperatingOccupancy {
+		return uncertain("target", "target physical concurrency limit or safe operating occupancy is invalid")
 	}
 
 	dependencySaturated := make(map[string]observation.DependencyObservation)
@@ -59,7 +66,7 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 		}
 	}
 
-	targetSaturated := snapshot.Target.P95Latency.Value > snapshot.SLOTargetP95Milliseconds && snapshot.Target.Utilization.Value > snapshot.Target.UtilizationThreshold
+	targetSaturated := snapshot.Target.P95Latency.Value > snapshot.SLOTargetP95Milliseconds && snapshot.Target.HottestReplicaOccupancy.Value >= snapshot.Target.SafeOperatingOccupancy
 	if snapshot.Target.P95Latency.Value <= snapshot.SLOTargetP95Milliseconds {
 		return Analysis{
 			Classification: Healthy,
@@ -75,7 +82,7 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 			Component:      "target",
 			Evidence: []string{
 				fmt.Sprintf("target p95 %.2fms exceeds SLO %.2fms", snapshot.Target.P95Latency.Value, snapshot.SLOTargetP95Milliseconds),
-				fmt.Sprintf("target utilization %.2f exceeds threshold %.2f", snapshot.Target.Utilization.Value, snapshot.Target.UtilizationThreshold),
+				fmt.Sprintf("hottest traffic-bearing target replica holds %.2f concurrency slots, at or above safe operating boundary %.2f (physical limit %.2f)", snapshot.Target.HottestReplicaOccupancy.Value, snapshot.Target.SafeOperatingOccupancy, snapshot.Target.PhysicalConcurrencyLimit),
 			},
 			Reason:     "target latency is above SLO and target saturation evidence is present",
 			Confidence: ConfidenceHigh,
@@ -118,8 +125,8 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 		}
 		if !dependency.Scalable {
 			evidence = append(evidence, fmt.Sprintf("dependency %q is configured non-scalable", dependency.Name))
-			if snapshot.Target.Utilization.Value <= snapshot.Target.UtilizationThreshold {
-				evidence = append(evidence, fmt.Sprintf("target utilization %.2f is at or below threshold %.2f", snapshot.Target.Utilization.Value, snapshot.Target.UtilizationThreshold))
+			if snapshot.Target.HottestReplicaOccupancy.Value < snapshot.Target.SafeOperatingOccupancy {
+				evidence = append(evidence, fmt.Sprintf("hottest traffic-bearing target replica occupancy %.2f is below safe operating boundary %.2f", snapshot.Target.HottestReplicaOccupancy.Value, snapshot.Target.SafeOperatingOccupancy))
 			}
 			upstream := make([]string, 0, 1)
 			for _, candidate := range snapshot.Dependencies {

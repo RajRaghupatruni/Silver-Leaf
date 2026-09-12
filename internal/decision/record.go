@@ -12,49 +12,93 @@ import (
 )
 
 type Input struct {
-	Action                        string
-	Reason                        string
-	ObservedMetric                *float64
-	Threshold                     *float64
-	CurrentReplicas               int32
-	DesiredReplicas               int32
-	ObservedAt                    time.Time
-	SLOTargetP95Milliseconds      float64
-	ObservedTargetP95Milliseconds *float64
-	TargetRequestRate             *float64
-	TargetSuccessfulRequestRate   *float64
-	TargetErrorRate               *float64
-	DependencyRequestRates        []optiscalev1alpha1.DependencyRequestRate
-	DetectedBottleneck            string
-	BottleneckComponent           string
-	Confidence                    string
-	Evidence                      []string
-	ChosenTarget                  string
-	RejectedActions               []string
+	Action                                 string
+	Reason                                 string
+	ObservedMetric                         *float64
+	Threshold                              *float64
+	CurrentReplicas                        int32
+	DesiredReplicas                        int32
+	ObservedAt                             time.Time
+	SLOTargetP95Milliseconds               float64
+	ObservedTargetP95Milliseconds          *float64
+	TargetRequestRate                      *float64
+	TargetSuccessfulRequestRate            *float64
+	TargetErrorRate                        *float64
+	PredictiveRequestRate                  *float64
+	PredictiveDemandWindowSeconds          *float64
+	DemandObservationLagSeconds            *float64
+	DependencyRequestRates                 []optiscalev1alpha1.DependencyRequestRate
+	ForecastRequestRate                    *float64
+	ForecastHorizonSeconds                 *float64
+	RequestRateSlope                       *float64
+	ForecastConfidence                     string
+	ForecastFitR2                          *float64
+	SafePerReplicaCapacity                 *float64
+	CurrentSafeCapacity                    *float64
+	ReadyReplicas                          int32
+	EffectiveServingReplicas               *int32
+	AggregateConcurrencySlotOccupancy      *float64
+	HottestReplicaConcurrencySlotOccupancy *float64
+	PhysicalConcurrencyLimit               *float64
+	SafeOperatingOccupancy                 *float64
+	ReadinessLeadTimeSeconds               *float64
+	ReadinessEvidenceSource                optiscalev1alpha1.ReadinessEvidenceSource
+	ReadinessTemplateIdentity              string
+	ControlLoopAllowanceSeconds            *float64
+	PredictionAccepted                     *bool
+	PredictionRejectedReason               string
+	DetectedBottleneck                     string
+	BottleneckComponent                    string
+	Confidence                             string
+	Evidence                               []string
+	ChosenTarget                           string
+	RejectedActions                        []string
 }
 
 func NewRecord(in Input) *optiscalev1alpha1.DecisionRecord {
 	return &optiscalev1alpha1.DecisionRecord{
-		ID:                            ID(in),
-		Timestamp:                     metav1.NewTime(time.Now().UTC()),
-		Action:                        optiscalev1alpha1.Action(in.Action),
-		Reason:                        in.Reason,
-		ObservedMetric:                in.ObservedMetric,
-		Threshold:                     in.Threshold,
-		CurrentReplicas:               in.CurrentReplicas,
-		DesiredReplicas:               in.DesiredReplicas,
-		SLOTargetP95Milliseconds:      in.SLOTargetP95Milliseconds,
-		ObservedTargetP95Milliseconds: cloneFloat64(in.ObservedTargetP95Milliseconds),
-		TargetRequestRate:             cloneFloat64(in.TargetRequestRate),
-		TargetSuccessfulRequestRate:   cloneFloat64(in.TargetSuccessfulRequestRate),
-		TargetErrorRate:               cloneFloat64(in.TargetErrorRate),
-		DependencyRequestRates:        cloneDependencyRates(in.DependencyRequestRates),
-		DetectedBottleneck:            in.DetectedBottleneck,
-		BottleneckComponent:           in.BottleneckComponent,
-		Confidence:                    in.Confidence,
-		Evidence:                      append([]string(nil), in.Evidence...),
-		ChosenTarget:                  in.ChosenTarget,
-		RejectedActions:               append([]string(nil), in.RejectedActions...),
+		ID:                                     ID(in),
+		Timestamp:                              metav1.NewTime(time.Now().UTC()),
+		Action:                                 optiscalev1alpha1.Action(in.Action),
+		Reason:                                 in.Reason,
+		ObservedMetric:                         in.ObservedMetric,
+		Threshold:                              in.Threshold,
+		CurrentReplicas:                        in.CurrentReplicas,
+		DesiredReplicas:                        in.DesiredReplicas,
+		SLOTargetP95Milliseconds:               in.SLOTargetP95Milliseconds,
+		ObservedTargetP95Milliseconds:          cloneFloat64(in.ObservedTargetP95Milliseconds),
+		TargetRequestRate:                      cloneFloat64(in.TargetRequestRate),
+		TargetSuccessfulRequestRate:            cloneFloat64(in.TargetSuccessfulRequestRate),
+		TargetErrorRate:                        cloneFloat64(in.TargetErrorRate),
+		PredictiveRequestRate:                  cloneFloat64(in.PredictiveRequestRate),
+		PredictiveDemandWindowSeconds:          cloneFloat64(in.PredictiveDemandWindowSeconds),
+		DemandObservationLagSeconds:            cloneFloat64(in.DemandObservationLagSeconds),
+		DependencyRequestRates:                 cloneDependencyRates(in.DependencyRequestRates),
+		ForecastRequestRate:                    cloneFloat64(in.ForecastRequestRate),
+		ForecastHorizonSeconds:                 cloneFloat64(in.ForecastHorizonSeconds),
+		RequestRateSlope:                       cloneFloat64(in.RequestRateSlope),
+		ForecastConfidence:                     in.ForecastConfidence,
+		ForecastFitR2:                          cloneFloat64(in.ForecastFitR2),
+		SafePerReplicaCapacity:                 cloneFloat64(in.SafePerReplicaCapacity),
+		CurrentSafeCapacity:                    cloneFloat64(in.CurrentSafeCapacity),
+		ReadyReplicas:                          in.ReadyReplicas,
+		EffectiveServingReplicas:               cloneInt32(in.EffectiveServingReplicas),
+		AggregateConcurrencySlotOccupancy:      cloneFloat64(in.AggregateConcurrencySlotOccupancy),
+		HottestReplicaConcurrencySlotOccupancy: cloneFloat64(in.HottestReplicaConcurrencySlotOccupancy),
+		PhysicalConcurrencyLimit:               cloneFloat64(in.PhysicalConcurrencyLimit),
+		SafeOperatingOccupancy:                 cloneFloat64(in.SafeOperatingOccupancy),
+		ReadinessLeadTimeSeconds:               cloneFloat64(in.ReadinessLeadTimeSeconds),
+		ReadinessEvidenceSource:                in.ReadinessEvidenceSource,
+		ReadinessTemplateIdentity:              in.ReadinessTemplateIdentity,
+		ControlLoopAllowanceSeconds:            cloneFloat64(in.ControlLoopAllowanceSeconds),
+		PredictionAccepted:                     cloneBool(in.PredictionAccepted),
+		PredictionRejectedReason:               in.PredictionRejectedReason,
+		DetectedBottleneck:                     in.DetectedBottleneck,
+		BottleneckComponent:                    in.BottleneckComponent,
+		Confidence:                             in.Confidence,
+		Evidence:                               append([]string(nil), in.Evidence...),
+		ChosenTarget:                           in.ChosenTarget,
+		RejectedActions:                        append([]string(nil), in.RejectedActions...),
 	}
 }
 
@@ -72,6 +116,22 @@ func pointerValue(value *float64) string {
 }
 
 func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneInt32(value *int32) *int32 {
 	if value == nil {
 		return nil
 	}

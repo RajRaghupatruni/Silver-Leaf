@@ -13,10 +13,18 @@ spec:
   metric:
     # Both services export this histogram in seconds; convert the target p95 to milliseconds.
     prometheusQuery: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-api"}[1m]))) * 1000
-    utilizationQuery: sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="demo-api"}[1m]))
-    utilizationThreshold: 30
+    # Aggregate wall-clock occupancy of the concurrency semaphore; this includes downstream waits.
+    utilizationQuery: sum(rate(http_concurrency_slot_seconds_total{namespace="optiscale-demo",app="demo-api"}[1m]))
+    # Use the hottest traffic-bearing pod, so idle Ready pods cannot hide one saturated replica.
+    hottestReplicaUtilizationQuery: max((sum by(instance) (rate(http_concurrency_slot_seconds_total{namespace="optiscale-demo",app="demo-api"}[1m]))) and on(instance) (sum by(instance) (rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[30s])) > 1))
+    # Count instances with >1 request/s over 30s; the controller validates 0 <= count <= Ready replicas.
+    servingReplicaCountQuery: count(sum by(instance) (rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[30s])) > 1) or vector(0)
+    # DEMO_CONCURRENCY=20 is the physical semaphore ceiling; the 0.75 safety margin derives 15 safe slots.
+    physicalConcurrencyLimit: 20
     requestRateQuery: sum(rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[1m]))
     errorRequestRateQuery: sum(rate(http_errors_total{namespace="optiscale-demo",app="demo-api"}[1m]))
+    # Dedicated fast target demand signal for forecasting; stable capacity/error rates remain on 1m queries above.
+    predictiveRequestRateQuery: sum(rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[30s]))
   slo:
     targetP95Milliseconds: 250
   policy:
@@ -61,3 +69,11 @@ spec:
       maxReplicas: 1
   prometheus:
     address: http://prometheus.optiscale-system.svc.cluster.local:9090
+  prediction:
+    enabled: true
+    # Keep learned healthy throughput at 75% of the conservative observed per-replica level.
+    safeCapacityMargin: 0.75
+    # Capacity evidence is learned only while the measured target error ratio is at or below 2%.
+    maxErrorRate: 0.02
+    # Must match the rate() window in metric.predictiveRequestRateQuery; lag is derived as half (15s).
+    predictiveDemandWindowSeconds: 30

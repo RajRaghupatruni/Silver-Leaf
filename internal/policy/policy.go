@@ -13,6 +13,7 @@ type Action string
 const (
 	ActionScaleTarget     Action = "SCALE_TARGET"
 	ActionScaleDependency Action = "SCALE_DEPENDENCY"
+	ActionPrescaleTarget  Action = "PRESCALE_TARGET"
 	ActionHold            Action = "HOLD"
 	ActionProtectedMode   Action = "PROTECTED_MODE"
 )
@@ -62,6 +63,101 @@ type CapacityDecision struct {
 	DesiredReplicas int32
 	Threshold       float64
 	HasThreshold    bool
+}
+
+// PrescaleInput is an advisory layered over the already-computed reactive decision.
+// It is only allowed to replace a healthy HOLD and cannot override stronger classifications.
+type PrescaleInput struct {
+	Current               CapacityDecision
+	Classification        capacity.Classification
+	RequestTelemetryValid bool
+	PredictiveDemandValid bool
+	ErrorRateHealthy      bool
+	DependenciesHealthy   bool
+	TargetUnsaturated     bool
+	CapacityEvidenceValid bool
+	RejectionReason       string
+	ForecastQuality       string
+	ForecastRequestRate   float64
+	RequestRateSlope      float64
+	SafeCapacity          float64
+	Horizon               time.Duration
+	Target                ComponentInput
+	MaxScaleUpStep        int32
+	Cooldown              time.Duration
+	LastScaleTime         *time.Time
+	Now                   time.Time
+}
+
+func EvaluatePrescale(in PrescaleInput) CapacityDecision {
+	decision := in.Current
+	if decision.Action != ActionHold || in.Classification != capacity.Healthy {
+		return decision
+	}
+	reject := func(reason string) CapacityDecision {
+		decision.Action = ActionHold
+		decision.DesiredReplicas = decision.CurrentReplicas
+		decision.Reason = "prediction rejected: " + reason
+		return decision
+	}
+	rejectReason := func(fallback string) CapacityDecision {
+		if in.RejectionReason != "" {
+			return reject(in.RejectionReason)
+		}
+		return reject(fallback)
+	}
+	if !in.RequestTelemetryValid {
+		return rejectReason("fresh complete request, successful-request, and error-rate telemetry is required")
+	}
+	if !in.PredictiveDemandValid {
+		return rejectReason("fresh predictive-demand telemetry is required")
+	}
+	if !in.ErrorRateHealthy {
+		return rejectReason("target error rate is not acceptable for healthy-capacity learning")
+	}
+	if !in.DependenciesHealthy {
+		return rejectReason("dependencies are not healthy")
+	}
+	if !in.TargetUnsaturated {
+		return rejectReason("target local utilization is at or above its saturation threshold")
+	}
+	if !in.CapacityEvidenceValid {
+		return rejectReason("measured readiness or healthy-capacity evidence is incomplete")
+	}
+	if in.RejectionReason != "" {
+		return reject(in.RejectionReason)
+	}
+	if in.LastScaleTime != nil && in.Cooldown > 0 && in.Now.Before(in.LastScaleTime.Add(in.Cooldown)) {
+		return reject("cooldown is active")
+	}
+	if in.ForecastQuality != "HIGH" {
+		return reject("forecast quality is not HIGH")
+	}
+	if in.Horizon <= 0 {
+		return reject("planning horizon is missing or invalid")
+	}
+	if !finiteNonnegative(in.ForecastRequestRate) || !finite(in.SafeCapacity) || in.SafeCapacity <= 0 || !finite(in.RequestRateSlope) || in.RequestRateSlope <= 0 {
+		return reject("forecast or safe-capacity value is invalid")
+	}
+	if in.ForecastRequestRate <= in.SafeCapacity {
+		return reject("forecast demand does not exceed current safe capacity")
+	}
+	if err := validateComponent(in.Target, in.MaxScaleUpStep, 1); err != nil {
+		return reject("invalid target scaling configuration: " + err.Error())
+	}
+	desired := in.Target.CurrentReplicas + in.MaxScaleUpStep
+	if desired > in.Target.MaxReplicas {
+		desired = in.Target.MaxReplicas
+	}
+	if desired == in.Target.CurrentReplicas {
+		return reject("maximum replicas already reached")
+	}
+	decision.Action = ActionPrescaleTarget
+	decision.ChosenComponent = in.Target.Name
+	decision.CurrentReplicas = in.Target.CurrentReplicas
+	decision.DesiredReplicas = desired
+	decision.Reason = fmt.Sprintf("forecast %.2f requests/s exceeds safe target capacity %.2f requests/s within %.1fs planning horizon", in.ForecastRequestRate, in.SafeCapacity, in.Horizon.Seconds())
+	return decision
 }
 
 // EvaluateCapacity maps an explainable bottleneck classification to one bounded mutation.
@@ -262,3 +358,7 @@ func validate(in Input) error {
 	}
 	return nil
 }
+
+func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+func finiteNonnegative(value float64) bool { return finite(value) && value >= 0 }

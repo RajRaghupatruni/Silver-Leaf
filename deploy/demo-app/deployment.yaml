@@ -33,6 +33,8 @@ spec:
           env:
             - name: DEMO_WORK_MS
               value: "25"
+            - name: DEMO_READY_DELAY_MS
+              value: "0"
             - name: DEMO_CONCURRENCY
               value: "20"
             - name: INVENTORY_SERVICE_URL
@@ -56,6 +58,7 @@ spec:
             httpGet:
               path: /readyz
               port: http
+            periodSeconds: 2
           livenessProbe:
             httpGet:
               path: /healthz

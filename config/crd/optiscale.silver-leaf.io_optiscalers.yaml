@@ -78,20 +78,34 @@ spec:
                   type: object
                   required:
                     - prometheusQuery
+                    - utilizationQuery
+                    - hottestReplicaUtilizationQuery
+                    - servingReplicaCountQuery
+                    - physicalConcurrencyLimit
                   properties:
                     prometheusQuery:
                       type: string
                       minLength: 1
                     utilizationQuery:
                       type: string
-                    utilizationThreshold:
+                      minLength: 1
+                    hottestReplicaUtilizationQuery:
+                      type: string
+                      minLength: 1
+                    servingReplicaCountQuery:
+                      type: string
+                      minLength: 1
+                    physicalConcurrencyLimit:
                       type: number
                       format: double
-                      minimum: 0
+                      minimum: 1
                     requestRateQuery:
                       type: string
                       minLength: 1
                     errorRequestRateQuery:
+                      type: string
+                      minLength: 1
+                    predictiveRequestRateQuery:
                       type: string
                       minLength: 1
                 slo:
@@ -209,6 +223,26 @@ spec:
                         type: integer
                         format: int32
                         minimum: 1
+                prediction:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    safeCapacityMargin:
+                      type: number
+                      format: double
+                      minimum: 0.000001
+                      maximum: 1
+                    maxErrorRate:
+                      type: number
+                      format: double
+                      minimum: 0
+                      maximum: 1
+                    predictiveDemandWindowSeconds:
+                      type: integer
+                      format: int32
+                      minimum: 2
+                      maximum: 120
             status:
               type: object
               properties:
@@ -228,6 +262,16 @@ spec:
                   type: string
                   format: date-time
                   nullable: true
+                learnedReadinessLeadTimeSeconds:
+                  type: number
+                  format: double
+                  nullable: true
+                learnedReadinessObservedAt:
+                  type: string
+                  format: date-time
+                  nullable: true
+                learnedReadinessTemplateIdentity:
+                  type: string
                 lastDecision:
                   type: object
                   nullable: true
@@ -249,6 +293,7 @@ spec:
                       enum:
                         - SCALE_TARGET
                         - SCALE_DEPENDENCY
+                        - PRESCALE_TARGET
                         - HOLD
                         - PROTECTED_MODE
                     reason:
@@ -286,6 +331,18 @@ spec:
                       type: number
                       format: double
                       nullable: true
+                    predictiveRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    predictiveDemandWindowSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    demandObservationLagSeconds:
+                      type: number
+                      format: double
+                      nullable: true
                     dependencyRequestRates:
                       type: array
                       items:
@@ -306,6 +363,74 @@ spec:
                             type: number
                             format: double
                             nullable: true
+                    forecastRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    forecastHorizonSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    requestRateSlope:
+                      type: number
+                      format: double
+                      nullable: true
+                    forecastConfidence:
+                      type: string
+                      enum: [LOW, MEDIUM, HIGH]
+                    forecastFitR2:
+                      type: number
+                      format: double
+                      nullable: true
+                    safePerReplicaCapacity:
+                      type: number
+                      format: double
+                      nullable: true
+                    currentSafeCapacity:
+                      type: number
+                      format: double
+                      nullable: true
+                    readyReplicas:
+                      type: integer
+                      format: int32
+                    effectiveServingReplicas:
+                      type: integer
+                      format: int32
+                      nullable: true
+                    aggregateConcurrencySlotOccupancy:
+                      type: number
+                      format: double
+                      nullable: true
+                    hottestReplicaConcurrencySlotOccupancy:
+                      type: number
+                      format: double
+                      nullable: true
+                    physicalConcurrencyLimit:
+                      type: number
+                      format: double
+                      nullable: true
+                    safeOperatingOccupancy:
+                      type: number
+                      format: double
+                      nullable: true
+                    readinessLeadTimeSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    readinessEvidenceSource:
+                      type: string
+                      enum: [CURRENT_FRESH_SAMPLE, PERSISTED_LEARNED_SAMPLE]
+                    readinessTemplateIdentity:
+                      type: string
+                    controlLoopAllowanceSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    predictionAccepted:
+                      type: boolean
+                      nullable: true
+                    predictionRejectedReason:
+                      type: string
                     detectedBottleneck:
                       type: string
                     bottleneckComponent:
@@ -335,7 +460,7 @@ spec:
                       format: date-time
                     action:
                       type: string
-                      enum: [SCALE_TARGET, SCALE_DEPENDENCY, HOLD, PROTECTED_MODE]
+                      enum: [SCALE_TARGET, SCALE_DEPENDENCY, PRESCALE_TARGET, HOLD, PROTECTED_MODE]
                     reason:
                       type: string
                     observedMetric:
@@ -371,6 +496,18 @@ spec:
                       type: number
                       format: double
                       nullable: true
+                    predictiveRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    predictiveDemandWindowSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    demandObservationLagSeconds:
+                      type: number
+                      format: double
+                      nullable: true
                     dependencyRequestRates:
                       type: array
                       items:
@@ -391,6 +528,74 @@ spec:
                             type: number
                             format: double
                             nullable: true
+                    forecastRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    forecastHorizonSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    requestRateSlope:
+                      type: number
+                      format: double
+                      nullable: true
+                    forecastConfidence:
+                      type: string
+                      enum: [LOW, MEDIUM, HIGH]
+                    forecastFitR2:
+                      type: number
+                      format: double
+                      nullable: true
+                    safePerReplicaCapacity:
+                      type: number
+                      format: double
+                      nullable: true
+                    currentSafeCapacity:
+                      type: number
+                      format: double
+                      nullable: true
+                    readyReplicas:
+                      type: integer
+                      format: int32
+                    effectiveServingReplicas:
+                      type: integer
+                      format: int32
+                      nullable: true
+                    aggregateConcurrencySlotOccupancy:
+                      type: number
+                      format: double
+                      nullable: true
+                    hottestReplicaConcurrencySlotOccupancy:
+                      type: number
+                      format: double
+                      nullable: true
+                    physicalConcurrencyLimit:
+                      type: number
+                      format: double
+                      nullable: true
+                    safeOperatingOccupancy:
+                      type: number
+                      format: double
+                      nullable: true
+                    readinessLeadTimeSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    readinessEvidenceSource:
+                      type: string
+                      enum: [CURRENT_FRESH_SAMPLE, PERSISTED_LEARNED_SAMPLE]
+                    readinessTemplateIdentity:
+                      type: string
+                    controlLoopAllowanceSeconds:
+                      type: number
+                      format: double
+                      nullable: true
+                    predictionAccepted:
+                      type: boolean
+                      nullable: true
+                    predictionRejectedReason:
+                      type: string
                     detectedBottleneck:
                       type: string
                     bottleneckComponent:

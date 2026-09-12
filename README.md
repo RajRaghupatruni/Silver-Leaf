@@ -1,25 +1,26 @@
-# OptiScale — Vertical Slice 3
+# OptiScale — Predictive Capacity Vertical Slice
 
-OptiScale is an explainable, SLO-aware Kubernetes Capacity Governor. Vertical Slice 3 demonstrates a bounded local topology: `demo-api` calls `inventory-service`, which executes real queries against a local PostgreSQL Deployment. Prometheus observes application request and database-query telemetry. A namespaced OptiScaler can scale `demo-api` or a configured scalable dependency through Kubernetes `/scale`; it identifies a saturated non-scalable PostgreSQL dependency as `CAPACITY_BLOCKED` and holds rather than adding ineffective upstream replicas.
+OptiScale is an explainable, SLO-aware Kubernetes Capacity Governor. The proven local topology is `demo-api` → `inventory-service` → PostgreSQL. Alongside reactive target/dependency scaling and `CAPACITY_BLOCKED`, the controller now has an optional bounded trend forecast that can choose `PRESCALE_TARGET` before the target SLO is violated. Forecasting uses transparent least-squares regression and measured healthy throughput; it is not opaque ML or durable production history.
 
 ```text
 load generator → demo-api → inventory-service → PostgreSQL
                      └──────── Prometheus pod discovery ───────┘
                                       ↓
                   typed observations → analyzer → guarded policy
+             healthy rising demand → forecast → PRESCALE_TARGET
                          CAPACITY_BLOCKED → HOLD (no scale write)
                                       ↓
                     Deployment /scale + DecisionRecord
 ```
 
-The analyzer classifies evidence as `HEALTHY`, `TARGET_SATURATED`, `DEPENDENCY_SATURATED`, `CAPACITY_BLOCKED`, or `UNCERTAIN`. The database scenario uses real inventory queries and application-observed database latency, errors, and in-flight query metrics; the query includes a configurable PostgreSQL `pg_sleep` delay for deterministic local testing. These measurements do not claim database CPU or internal wait-state telemetry. Missing, stale, malformed, or conflicting evidence is protected and cannot cause scale-down. Forecasting, machine learning, OpenTelemetry, Grafana, Karpenter, capacity learning, replay, and sophisticated optimization are not implemented.
+The analyzer classifies evidence as `HEALTHY`, `TARGET_SATURATED`, `DEPENDENCY_SATURATED`, `CAPACITY_BLOCKED`, or `UNCERTAIN`. Reactive and dependency decisions take precedence over prediction; incomplete forecast inputs only suppress prescaling. The database scenario uses real inventory queries and application-observed database latency, errors, and in-flight query metrics; the query includes a configurable PostgreSQL `pg_sleep` delay for deterministic local testing. These measurements do not claim database CPU or internal wait-state telemetry. Histories and empirical capacity evidence are controller-local and reset on restart. No Random Forest, persistent learning, OpenTelemetry, Grafana, Karpenter, replay, or sophisticated optimization is implemented.
 
 ## Run locally with Minikube
 
 Prerequisites: Go 1.23+, Docker, kubectl, Minikube, and Make (or run the commands in the Makefile directly in PowerShell).
 
 ```powershell
-minikube start
+minikube start --cpus=4 --memory=4096
 kubectl apply -f deploy/namespace.yaml
 .\deploy\postgres\create-secret.ps1
 make docker-build
@@ -61,6 +62,14 @@ Expected decision: `DEPENDENCY_SATURATED` and `SCALE_DEPENDENCY` for `inventory-
 
 Expected decision: `CAPACITY_BLOCKED` / `HOLD`, with `postgres` as the bottleneck. The API and inventory local-work signals stay below their thresholds while real inventory SQL calls wait inside PostgreSQL. Inventory request latency is recorded as downstream evidence, not treated as proof that adding inventory replicas helps. The decision should list rejected `SCALE_TARGET` and `SCALE_DEPENDENCY` actions. Confirm that both `demo-api` and `inventory-service` replica counts remain unchanged.
 
+Run the actual traffic ramp for predictive prescaling:
+
+```powershell
+.\deploy\scenarios\predictable-ramp.ps1
+```
+
+The scenario restores the calibrated healthy target/dependency settings and runs a Kubernetes-local `grafana/k6:2.2.0` Job using an open `ramping-arrival-rate` executor (one GET per scheduled iteration; 400 preallocated/max VUs). It holds 200 RPS for 110 seconds (65 seconds for baseline validation with OptiScale stopped, then 45 seconds for clean controller samples), ramps linearly from 200 to 480 RPS over 180 seconds, and holds 480 RPS for 45 seconds. The 200 RPS baseline is a runtime-proven healthy capacity-learning point; the 450 RPS region approaches the measured 2-replica safe-capacity/SLO boundary, so the gradual ramp gives the unchanged forecast window and 15-second controller cadence time to observe rising demand before that boundary. The final plateau preserves a post-prescale observation window. The job fails on dropped arrivals or a 1% HTTP failure rate. The PowerShell script succeeds only for a new, high-quality `PRESCALE_TARGET` before the 250ms SLO is reached, with the real 2→3 Deployment scale, all three target replicas Ready before the SLO boundary, and a new `PreScaleTarget` Event verified. It prints and records both decision and readiness-proof state, then retains the Job and its logs for inspection. No host k6 installation or forecast-metric injection is used; end-to-end prescaling is established only by observing the run in Minikube.
+
 Restore baseline settings by reapplying the deployment manifests and restarting load generation:
 
 ```powershell
@@ -73,15 +82,23 @@ Reapplying `deploy/inventory/deployment.yaml` restores `INVENTORY_DB_DELAY_MS=0`
 
 ## Metrics and policy
 
-Both HTTP services export monotonic `http_requests_total` and `http_errors_total` counters alongside `http_active_requests`, `http_active_work`, and `http_request_duration_seconds`. `http_errors_total` counts requests the app actually returns as errors; successful RPS is derived as total RPS minus error RPS. Inventory additionally exports `db_requests_total`, `db_errors_total`, `db_active_requests`, and the `db_request_duration_seconds` histogram around actual PostgreSQL queries. These are application-observed query metrics, not database-internal utilization. The API utilization signal specifically measures local API work, not time blocked on the dependency. The sample uses these actual metric names:
+Both HTTP services export monotonic `http_requests_total` and `http_errors_total` counters alongside `http_active_requests`, `http_active_work`, and `http_request_duration_seconds`. `demo-api` also exports cumulative `http_local_work_seconds_total` for diagnostic visibility and the production capacity signal `http_concurrency_slot_seconds_total`, which adds the full wall-clock time each request holds a `DEMO_CONCURRENCY` semaphore slot, including local work and downstream HTTP wait. Time queued before acquiring a slot is excluded and counted separately in `http_concurrency_queue_seconds_total`; instantaneous `http_concurrency_slots_in_use` and `http_concurrency_queue_waiters` gauges aid debugging. `http_active_work` and `http_local_work_seconds_total` remain useful diagnostics but no longer define target capacity. `http_errors_total` counts requests the app actually returns as errors; successful RPS is derived as total RPS minus error RPS. Inventory additionally exports `db_requests_total`, `db_errors_total`, `db_active_requests`, and the `db_request_duration_seconds` histogram around actual PostgreSQL queries. These are application-observed query metrics, not database-internal utilization. The sample uses these actual metric names:
 
-- Target p95: `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-api"}[1m]))) * 1000`
-- Target active work: `sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="demo-api"}[1m]))` (threshold `30`)
+- Target p95: `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-api"}[1m]))) * 1000`; the demo-api histogram has 25ms bucket boundaries from 200ms through 300ms around the 250ms SLO.
+- Experimental direct 250ms SLO compliance ratio: `sum(rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-api",le="0.25"}[1m])) / sum(rate(http_request_duration_seconds_count{namespace="optiscale-demo",app="demo-api"}[1m]))`. A result >= `0.95` means at least 95% of observed requests completed within 250ms (equivalent to p95 <= 250ms); it is for runtime evidence only and does not replace the configured p95 observation used by OptiScale. With no requests the ratio is undefined.
+- Aggregate held-slot occupancy: `sum(rate(http_concurrency_slot_seconds_total{namespace="optiscale-demo",app="demo-api"}[1m]))`.
+- Hottest traffic-bearing pod occupancy: `max((sum by(instance) (rate(http_concurrency_slot_seconds_total{namespace="optiscale-demo",app="demo-api"}[1m]))) and on(instance) (sum by(instance) (rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[30s])) > 1))`; the traffic filter matches the configured effective-serving definition, so an idle or below-cutoff pod is excluded from hottest-serving saturation evidence.
+- Effective serving replicas: `count(sum by(instance) (rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[30s])) > 1)`. Here “effective” means an instance exceeded 1 request/s over the configured 30s rate window; the controller validates that this integer count is no greater than Kubernetes Ready replicas.
+- Target physical concurrency limit: `physicalConcurrencyLimit: 20`, matching `DEMO_CONCURRENCY=20`. The existing `safeCapacityMargin: 0.75` derives a safe operating occupancy of 15 slots per serving replica; it is applied once, not again to a pre-reduced limit. The 30% capacity-learning floor is 4.5 mean held slots per effective serving replica.
+- Empirical capacity learning uses `successful RPS / aggregate held-slot occupancy` as throughput efficiency, extrapolates that efficiency to the physical 20-slot per-pod ceiling, then applies the 0.75 margin. Realized current safe capacity is `safe RPS per serving replica × effective serving replicas`, never `× Ready replicas`.
+- `http_local_work_seconds_total` and `http_active_work` remain diagnostic signals; they omit dependency wait from the target's constrained semaphore-slot measurement.
+- Target instant active-work gauge (debugging only): `http_active_work{namespace="optiscale-demo",app="demo-api"}`
 - Inventory p95: `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="inventory-service"}[1m]))) * 1000`
 - Inventory active work: `sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="inventory-service"}[1m]))` (threshold `100`; latency is the dependency scenario signal)
 - PostgreSQL-query p95: `histogram_quantile(0.95, sum by (le) (rate(db_request_duration_seconds_bucket{namespace="optiscale-demo",app="inventory-service"}[1m]))) * 1000` (threshold `250ms`)
 - In-flight PostgreSQL queries: `sum(avg_over_time(db_active_requests{namespace="optiscale-demo",app="inventory-service"}[1m]))` (threshold `8`)
 - Target request RPS: `sum(rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[1m]))`
+- Target predictive-demand RPS (forecast trend only): `sum(rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[30s]))`
 - Target error RPS: `sum(rate(http_errors_total{namespace="optiscale-demo",app="demo-api"}[1m]))`
 - Inventory request RPS: `sum(rate(http_requests_total{namespace="optiscale-demo",app="inventory-service"}[1m]))`
 - Inventory error RPS: `sum(rate(http_errors_total{namespace="optiscale-demo",app="inventory-service"}[1m]))`
@@ -90,24 +107,32 @@ Both HTTP services export monotonic `http_requests_total` and `http_errors_total
 
 For each component, `errorRate = error RPS / total RPS` and `successful RPS = total RPS - error RPS`. Error rate is a ratio from `0` to `1`. A zero request-rate denominator leaves error rate absent/undefined, not `0`.
 
-When target p95 exceeds its SLO and target active-work evidence exceeds its threshold, the policy may scale the target. If the target is not locally saturated, a saturated scalable dependency may be scaled. The sample topology declares `inventory-service` as depending on `postgres`: when PostgreSQL is saturated, inventory latency alone is treated as downstream evidence. A non-scalable saturated database produces `CAPACITY_BLOCKED` and `HOLD`, with concrete threshold evidence and rejected upstream scale actions; independent upstream utilization saturation keeps attribution conservative. Decisions use configured bounds, step limits, and cooldown. Missing or invalid telemetry enters protected mode. No replica write is made for a no-op.
+When target p95 exceeds its SLO and the hottest traffic-bearing replica's held-slot occupancy reaches the derived safe operating boundary, the policy may scale the target. A Ready pod is not assumed to contribute realized capacity until recent request telemetry shows meaningful traffic reaching it. If Ready replicas exceed effective serving replicas, target scaling/prescaling is held until the requested capacity is observed serving; this avoids repeated blind scale-ups. Service-level connection reuse can plausibly leave a newly Ready endpoint with little traffic, but the observed idle endpoint alone does not prove that cause. If the target is not locally saturated, dependency decisions remain unchanged: a saturated scalable dependency may be scaled; the configured non-scalable PostgreSQL bottleneck produces `CAPACITY_BLOCKED` and `HOLD`. Decisions use configured bounds, step limits, and cooldown. Missing required SLO, slot-occupancy, serving-count, or dependency telemetry remains protected; incomplete optional forecast telemetry suppresses prescaling and holds. No replica write is made for a no-op.
 
-The signal roles remain distinct: p95/SLO describes user impact; active work indicates local constraint; request and successful-request rates describe served demand; and error ratio describes reliability/telemetry health. Request/error rates are recorded in `status.lastDecision` as capacity-model inputs only and do not change the existing scale policy. When the request-rate denominator is zero, request and successful RPS can be zero while the error ratio remains absent/undefined; missing error telemetry is never represented as zero errors.
+When prediction is enabled, it is considered only for a currently `HEALTHY` target with healthy dependencies and a HOLD from the existing policy. It cannot override target saturation, dependency saturation, `CAPACITY_BLOCKED`, protected mode, or cooldown. Stable target request/error/success rates remain based on the configured 1-minute queries and continue to drive DecisionRecord telemetry and healthy-capacity learning. A separate `metric.predictiveRequestRateQuery` supplies only the target trend signal; the sample config uses `sum(rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[30s]))`. Configure `prediction.predictiveDemandWindowSeconds: 30` to match that PromQL range. The controller derives predictive-demand observation lag as half the configured window (15 seconds); it does not parse PromQL or silently fall back to the stable rate when this signal is missing, stale, or non-finite. Such missing fast telemetry blocks prescaling but does not invalidate otherwise eligible capacity samples.
 
-`status.lastDecision` contains the latest analysis, evidence, qualitative confidence, action, chosen workload, and replica values. `status.currentReplicas` and `desiredReplicas` continue to describe the primary `demo-api` target. `status.lastScaleDecision` retains the most recent mutating decision across later HOLD or protected-mode evaluations.
+The controller retains at most 20 predictive-demand samples from the last five minutes, but fits ordinary least squares only over samples in the fixed 120-second window ending at the latest sample. Retained history is not the same as the active trend-fit window. At least five fit samples over 60 seconds, no sample gap over 45 seconds, a fresh latest sample, a positive slope, a planning horizon no longer than the fit span, R^2 >= 0.95, and normalized RMSE <= 0.10 are required; only `HIGH` quality can prescale. The recent window emphasizes a sustained current demand regime while retaining the strict fit-quality gates. The planning horizon is the sum of measured Pod creation-to-Ready time, the 15-second reconcile/control-loop allowance, and predictive-demand observation lag (half the configured rate window). With the sample's 30-second window and an example 22-second measured readiness, the horizon is 22 + 15 + 15 = 52 seconds. End-to-end `/scale`-to-Pod-creation latency is not yet learned.
+
+Safe per-serving-replica capacity is learned only from healthy samples: target p95 within SLO, dependencies healthy, fresh complete request/success/error and slot-occupancy observations, acceptable error ratio, all requested replicas Ready and traffic-bearing, mean slot occupancy per serving replica at least 30% of the safe boundary but below it, and hottest-serving occupancy below that boundary. This prevents a second proactive scale while prior requested capacity is still converging or not receiving traffic, even when cooldown is zero. For each sample the controller computes successful RPS divided by aggregate held-slot occupancy, takes the conservative nearest-rank 20th percentile of at least three efficiencies, extrapolates to the physical 20-slot semaphore limit, and applies the `0.75` margin once. Realized safe capacity multiplies the resulting safe per-serving-replica estimate by effective serving replicas, not Kubernetes Ready replicas. This simple linear extrapolation is empirical, not a queueing-model inference. Prescaling requires forecast demand to exceed realized current safe capacity and uses the configured `maxScaleUpStep`, max replicas, and cooldown. The sample's healthy-capacity error limit remains `0.02`.
+
+Readiness lead time uses the maximum valid `Pod creationTimestamp` → `PodReady=True.lastTransitionTime` sample from currently Ready pods owned by the current target ReplicaSet, only when every regular container has `restartCount=0`. All Ready, non-terminating selected pods still count toward Ready replicas, but restarted pods never provide startup-latency samples. The current revision is resolved from the Deployment's observed generation and its matching Deployment-owned ReplicaSet `pod-template-hash`; an unresolved rollout blocks prescaling. Fresh measurements are persisted in OptiScaler status as `learnedReadinessLeadTimeSeconds`, `learnedReadinessObservedAt`, and `learnedReadinessTemplateIdentity`. With no fresh sample, a stored measurement is reused only when its template hash matches the current revision; otherwise readiness is unavailable and prescaling is held. This prevents a host/node reboot from turning an old pod creation timestamp into a huge startup duration, while retaining same-revision startup evidence across controller restarts. Request-rate and capacity histories remain bounded per OptiScaler in controller memory and are lost when the controller restarts; no persistent forecast history is claimed.
+
+The signal roles remain distinct: p95/SLO describes user impact; hottest held-slot occupancy describes local target constraint; request and successful-request rates describe served demand; and error ratio describes reliability/telemetry health. Request/error rates are recorded in `status.lastDecision` as capacity-model inputs only and do not change the existing scale policy. When the request-rate denominator is zero, request and successful RPS can be zero while the error ratio remains absent/undefined; missing error telemetry is never represented as zero errors.
+
+`status.lastDecision` contains the latest analysis, evidence, qualitative confidence, action, chosen workload, and replica values. Predictive decisions separately report the fast `predictiveRequestRate`, configured `predictiveDemandWindowSeconds`, derived `demandObservationLagSeconds`, raw `readinessLeadTimeSeconds`, `readinessEvidenceSource` (`CURRENT_FRESH_SAMPLE` or `PERSISTED_LEARNED_SAMPLE`), target template identity, `controlLoopAllowanceSeconds`, and composed `forecastHorizonSeconds`. The matching learned startup measurement is persisted directly on `status`, not inferred from `lastDecision`. `status.currentReplicas` and `desiredReplicas` continue to describe the primary `demo-api` target. `status.lastScaleDecision` retains the most recent mutating decision across later HOLD or protected-mode evaluations.
 
 ## Layout
 
 - `api/v1alpha1`: typed OptiScaler spec, dependency fields, status, and DecisionRecord.
 - `cmd/optiscaler`: controller manager.
 - `cmd/demo-app`, `cmd/inventory-service`: instrumented demo services.
-- `internal/observation`, `internal/capacity`, `internal/policy`: typed observations, deterministic analyzer, and pure guardrail policy.
+- `internal/observation`, `internal/capacity`, `internal/forecast`, `internal/policy`: typed observations, deterministic analyzer, explainable trend/capacity model, and pure guardrail policy.
 - `internal/controller`: reconciliation and Deployment scale-subresource calls.
 - `deploy/`: canonical namespace, demo workloads, load generator, and scenario profiles.
 - `config/`: CRD, RBAC, Prometheus, controller, and sample resource.
 - `deploy/postgres/`: local PostgreSQL, schema seed, and local-only Secret helper.
-- `deploy/scenarios/`: deterministic target, dependency, and database bottleneck profiles.
-- `docs/architecture.md`: implemented V3 behavior and safety boundaries.
+- `deploy/scenarios/`: deterministic target, dependency, database bottleneck, and traffic-ramp profiles.
+- `docs/architecture.md`: implemented reactive/predictive behavior and safety boundaries.
 
 ## Checks
 

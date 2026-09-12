@@ -42,6 +42,91 @@ func (in *DecisionRecord) DeepCopyInto(out *DecisionRecord) {
 		*out = new(float64)
 		**out = **in
 	}
+	if in.PredictiveRequestRate != nil {
+		in, out := &in.PredictiveRequestRate, &out.PredictiveRequestRate
+		*out = new(float64)
+		**out = **in
+	}
+	if in.PredictiveDemandWindowSeconds != nil {
+		in, out := &in.PredictiveDemandWindowSeconds, &out.PredictiveDemandWindowSeconds
+		*out = new(float64)
+		**out = **in
+	}
+	if in.DemandObservationLagSeconds != nil {
+		in, out := &in.DemandObservationLagSeconds, &out.DemandObservationLagSeconds
+		*out = new(float64)
+		**out = **in
+	}
+	if in.ForecastRequestRate != nil {
+		in, out := &in.ForecastRequestRate, &out.ForecastRequestRate
+		*out = new(float64)
+		**out = **in
+	}
+	if in.ForecastHorizonSeconds != nil {
+		in, out := &in.ForecastHorizonSeconds, &out.ForecastHorizonSeconds
+		*out = new(float64)
+		**out = **in
+	}
+	if in.RequestRateSlope != nil {
+		in, out := &in.RequestRateSlope, &out.RequestRateSlope
+		*out = new(float64)
+		**out = **in
+	}
+	if in.ForecastFitR2 != nil {
+		in, out := &in.ForecastFitR2, &out.ForecastFitR2
+		*out = new(float64)
+		**out = **in
+	}
+	if in.SafePerReplicaCapacity != nil {
+		in, out := &in.SafePerReplicaCapacity, &out.SafePerReplicaCapacity
+		*out = new(float64)
+		**out = **in
+	}
+	if in.CurrentSafeCapacity != nil {
+		in, out := &in.CurrentSafeCapacity, &out.CurrentSafeCapacity
+		*out = new(float64)
+		**out = **in
+	}
+	if in.EffectiveServingReplicas != nil {
+		in, out := &in.EffectiveServingReplicas, &out.EffectiveServingReplicas
+		*out = new(int32)
+		**out = **in
+	}
+	if in.AggregateConcurrencySlotOccupancy != nil {
+		in, out := &in.AggregateConcurrencySlotOccupancy, &out.AggregateConcurrencySlotOccupancy
+		*out = new(float64)
+		**out = **in
+	}
+	if in.HottestReplicaConcurrencySlotOccupancy != nil {
+		in, out := &in.HottestReplicaConcurrencySlotOccupancy, &out.HottestReplicaConcurrencySlotOccupancy
+		*out = new(float64)
+		**out = **in
+	}
+	if in.PhysicalConcurrencyLimit != nil {
+		in, out := &in.PhysicalConcurrencyLimit, &out.PhysicalConcurrencyLimit
+		*out = new(float64)
+		**out = **in
+	}
+	if in.SafeOperatingOccupancy != nil {
+		in, out := &in.SafeOperatingOccupancy, &out.SafeOperatingOccupancy
+		*out = new(float64)
+		**out = **in
+	}
+	if in.ReadinessLeadTimeSeconds != nil {
+		in, out := &in.ReadinessLeadTimeSeconds, &out.ReadinessLeadTimeSeconds
+		*out = new(float64)
+		**out = **in
+	}
+	if in.ControlLoopAllowanceSeconds != nil {
+		in, out := &in.ControlLoopAllowanceSeconds, &out.ControlLoopAllowanceSeconds
+		*out = new(float64)
+		**out = **in
+	}
+	if in.PredictionAccepted != nil {
+		in, out := &in.PredictionAccepted, &out.PredictionAccepted
+		*out = new(bool)
+		**out = **in
+	}
 	if in.DependencyRequestRates != nil {
 		in, out := &in.DependencyRequestRates, &out.DependencyRequestRates
 		*out = make([]DependencyRequestRate, len(*in))
@@ -181,6 +266,15 @@ func (in *OptiScalerStatus) DeepCopyInto(out *OptiScalerStatus) {
 	}
 	if in.LastScaleDecision != nil {
 		out.LastScaleDecision = in.LastScaleDecision.DeepCopy()
+	}
+	if in.LearnedReadinessLeadTimeSeconds != nil {
+		in, out := &in.LearnedReadinessLeadTimeSeconds, &out.LearnedReadinessLeadTimeSeconds
+		*out = new(float64)
+		**out = **in
+	}
+	if in.LearnedReadinessObservedAt != nil {
+		in, out := &in.LearnedReadinessObservedAt, &out.LearnedReadinessObservedAt
+		*out = (*in).DeepCopy()
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
