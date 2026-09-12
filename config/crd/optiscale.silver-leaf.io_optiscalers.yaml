@@ -88,6 +88,12 @@ spec:
                       type: number
                       format: double
                       minimum: 0
+                    requestRateQuery:
+                      type: string
+                      minLength: 1
+                    errorRequestRateQuery:
+                      type: string
+                      minLength: 1
                 slo:
                   type: object
                   required:
@@ -173,6 +179,12 @@ spec:
                             type: string
                             minLength: 1
                           utilizationQuery:
+                            type: string
+                            minLength: 1
+                          requestRateQuery:
+                            type: string
+                            minLength: 1
+                          errorRequestRateQuery:
                             type: string
                             minLength: 1
                       thresholds:
@@ -262,6 +274,38 @@ spec:
                       type: number
                       format: double
                       nullable: true
+                    targetRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    targetSuccessfulRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    targetErrorRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    dependencyRequestRates:
+                      type: array
+                      items:
+                        type: object
+                        required: [name]
+                        properties:
+                          name:
+                            type: string
+                          requestRate:
+                            type: number
+                            format: double
+                            nullable: true
+                          successfulRequestRate:
+                            type: number
+                            format: double
+                            nullable: true
+                          errorRate:
+                            type: number
+                            format: double
+                            nullable: true
                     detectedBottleneck:
                       type: string
                     bottleneckComponent:
@@ -315,6 +359,38 @@ spec:
                       type: number
                       format: double
                       nullable: true
+                    targetRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    targetSuccessfulRequestRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    targetErrorRate:
+                      type: number
+                      format: double
+                      nullable: true
+                    dependencyRequestRates:
+                      type: array
+                      items:
+                        type: object
+                        required: [name]
+                        properties:
+                          name:
+                            type: string
+                          requestRate:
+                            type: number
+                            format: double
+                            nullable: true
+                          successfulRequestRate:
+                            type: number
+                            format: double
+                            nullable: true
+                          errorRate:
+                            type: number
+                            format: double
+                            nullable: true
                     detectedBottleneck:
                       type: string
                     bottleneckComponent:

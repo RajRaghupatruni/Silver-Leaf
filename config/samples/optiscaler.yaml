@@ -15,6 +15,8 @@ spec:
     prometheusQuery: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-api"}[1m]))) * 1000
     utilizationQuery: sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="demo-api"}[1m]))
     utilizationThreshold: 30
+    requestRateQuery: sum(rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[1m]))
+    errorRequestRateQuery: sum(rate(http_errors_total{namespace="optiscale-demo",app="demo-api"}[1m]))
   slo:
     targetP95Milliseconds: 250
   policy:
@@ -33,6 +35,8 @@ spec:
       metrics:
         latencyQuery: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="inventory-service"}[1m]))) * 1000
         utilizationQuery: sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="inventory-service"}[1m]))
+        requestRateQuery: sum(rate(http_requests_total{namespace="optiscale-demo",app="inventory-service"}[1m]))
+        errorRequestRateQuery: sum(rate(http_errors_total{namespace="optiscale-demo",app="inventory-service"}[1m]))
       thresholds:
         latencyMilliseconds: 250
         utilization: 100
@@ -47,6 +51,8 @@ spec:
       metrics:
         latencyQuery: histogram_quantile(0.95, sum by (le) (rate(db_request_duration_seconds_bucket{namespace="optiscale-demo",app="inventory-service"}[1m]))) * 1000
         utilizationQuery: sum(avg_over_time(db_active_requests{namespace="optiscale-demo",app="inventory-service"}[1m]))
+        requestRateQuery: sum(rate(db_requests_total{namespace="optiscale-demo",app="inventory-service"}[1m]))
+        errorRequestRateQuery: sum(rate(db_errors_total{namespace="optiscale-demo",app="inventory-service"}[1m]))
       thresholds:
         latencyMilliseconds: 250
         utilization: 8

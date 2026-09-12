@@ -19,7 +19,9 @@ loadgen → demo-api → inventory-service → PostgreSQL
 
 `demo-api` performs configurable local work and makes a bounded HTTP call to `inventory-service`. Inventory performs a real SQL query against the local PostgreSQL service. Each HTTP service exports request/error counters, in-flight request and local-work gauges, and a request-duration histogram. Inventory also exports application-observed database request/error counters, in-flight database requests, and a DB-query duration histogram. Prometheus discovers annotated pods dynamically in the demo namespace; neither service address nor a Minikube IP is embedded in scrape configuration. The target and inventory utilization queries use `http_active_work`, so dependency waiting is not counted as local work. The DB active-query gauge includes calls waiting on a database connection and calls executing queries; it is not a claim about PostgreSQL CPU or internal wait states.
 
-The OptiScaler's target query supplies p95 latency in milliseconds; a second target query supplies averaged active local work. Each configured dependency has its own latency and utilization queries and thresholds. A missing, malformed, non-finite, stale, or future-dated query result is invalid evidence, never zero.
+The OptiScaler's target query supplies p95 latency in milliseconds; a second target query supplies averaged active local work. Each configured dependency has its own latency and utilization queries and thresholds. Request and error rates use `rate()` over the existing monotonically increasing total/error counters. The controller retains total requests per second, derives successful requests per second as total minus errors, and derives the error ratio as error RPS divided by total RPS. A zero request rate leaves the error ratio undefined; missing, malformed, non-finite, stale, or future-dated observations stay absent rather than becoming zero.
+
+Signal roles are intentionally separate: p95/SLO asks whether users are suffering; local active-work telemetry indicates component constraint; request/successful-request rates quantify served demand; and error ratio describes failure rate and whether that reliability observation is trustworthy. Request/error telemetry is recorded in the latest DecisionRecord for capacity analysis, not used as a scaling trigger in this slice.
 
 ## Analyzer rules
 
@@ -39,7 +41,7 @@ The controller supports `apps/v1 Deployment` only. It reads and updates `autosca
 
 ## Status and explainability
 
-`status.lastDecision` records SLO target, observed target p95, bottleneck classification/component, evidence, qualitative confidence, chosen action/workload, rejected alternatives, current/desired replicas, and reason. Top-level status replica fields continue to describe the primary target. `status.lastScaleDecision` changes only after a real `/scale` mutation, so later HOLD or protected evaluations do not erase the most recent scaling rationale. One structured controller log is emitted per capacity evaluation with target, p95, SLO, bottleneck, action, workload, replicas, and reason.
+`status.lastDecision` records SLO target, observed target p95, target request/successful-request rates and error ratio when defined, compact per-dependency request/error summaries, bottleneck classification/component, evidence, qualitative confidence, chosen action/workload, rejected alternatives, current/desired replicas, and reason. Top-level status replica fields continue to describe the primary target. `status.lastScaleDecision` changes only after a real `/scale` mutation, so later HOLD or protected evaluations do not erase the most recent scaling rationale. One structured controller log is emitted per capacity evaluation with target, p95, SLO, bottleneck, action, workload, replicas, and reason.
 
 ## Scope boundary
 

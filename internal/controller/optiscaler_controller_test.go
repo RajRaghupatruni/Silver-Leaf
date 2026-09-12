@@ -27,6 +27,11 @@ func TestValidateSpec(t *testing.T) {
 	if err := validateSpec(spec); err != nil {
 		t.Fatalf("valid spec rejected: %v", err)
 	}
+	spec.Metric.RequestRateQuery = "requests"
+	if err := validateSpec(spec); err == nil {
+		t.Fatal("request-rate query accepted without matching error-rate query")
+	}
+	spec.Metric.ErrorRequestRateQuery = "errors"
 	spec.Metric.UtilizationQuery = "active"
 	spec.Metric.UtilizationThreshold = 30
 	spec.Dependencies = []optiscalev1alpha1.DependencySpec{
@@ -48,6 +53,14 @@ func TestValidateSpec(t *testing.T) {
 	if err := validateSpec(spec); err != nil {
 		t.Fatalf("valid dependency topology rejected: %v", err)
 	}
+	spec.Dependencies[0].Metrics.RequestRateQuery = "requests"
+	if err := validateSpec(spec); err == nil {
+		t.Fatal("dependency request-rate query accepted without matching error-rate query")
+	}
+	spec.Dependencies[0].Metrics.ErrorRequestRateQuery = "errors"
+	if err := validateSpec(spec); err != nil {
+		t.Fatalf("valid paired dependency rate queries rejected: %v", err)
+	}
 	spec.Dependencies[0].DependsOn = "missing"
 	if err := validateSpec(spec); err == nil {
 		t.Fatal("unconfigured downstream dependency accepted")
@@ -67,6 +80,10 @@ func TestStatusDecisionRecordCreation(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&optiscalev1alpha1.OptiScaler{}).WithObjects(resource).Build()
 	r := &OptiScalerReconciler{Client: client, Scheme: scheme}
 	metric := 300.0
+	requestRate := 40.0
+	successfulRequestRate := 38.0
+	errorRate := 0.05
+	dependencyRequestRate := 20.0
 	now := time.Now().UTC()
 	status := resource.Status
 	status.CurrentReplicas = 2
@@ -77,7 +94,9 @@ func TestStatusDecisionRecordCreation(t *testing.T) {
 		ObservedMetric: &metric, CurrentReplicas: 1, DesiredReplicas: 1, ObservedAt: now,
 		DetectedBottleneck: "CAPACITY_BLOCKED", BottleneckComponent: "postgres", Confidence: "HIGH",
 		Evidence: []string{"database p95 exceeds threshold"}, ChosenTarget: "postgres",
-		RejectedActions: []string{"SCALE_TARGET: target is not locally saturated", "SCALE_DEPENDENCY: dependency is non-scalable"},
+		RejectedActions:   []string{"SCALE_TARGET: target is not locally saturated", "SCALE_DEPENDENCY: dependency is non-scalable"},
+		TargetRequestRate: &requestRate, TargetSuccessfulRequestRate: &successfulRequestRate, TargetErrorRate: &errorRate,
+		DependencyRequestRates: []optiscalev1alpha1.DependencyRequestRate{{Name: "postgres", RequestRate: &dependencyRequestRate, ErrorRate: &errorRate}},
 	})
 	if err := r.updateStatus(context.Background(), resource, status); err != nil {
 		t.Fatal(err)
@@ -91,6 +110,9 @@ func TestStatusDecisionRecordCreation(t *testing.T) {
 	}
 	if got.Status.LastDecision.DetectedBottleneck != "CAPACITY_BLOCKED" || got.Status.LastDecision.BottleneckComponent != "postgres" || got.Status.LastDecision.Confidence != "HIGH" || len(got.Status.LastDecision.RejectedActions) != 2 {
 		t.Fatalf("capacity-blocked DecisionRecord fields were not persisted: %+v", got.Status.LastDecision)
+	}
+	if got.Status.LastDecision.TargetRequestRate == nil || *got.Status.LastDecision.TargetRequestRate != requestRate || got.Status.LastDecision.TargetSuccessfulRequestRate == nil || *got.Status.LastDecision.TargetSuccessfulRequestRate != successfulRequestRate || got.Status.LastDecision.TargetErrorRate == nil || *got.Status.LastDecision.TargetErrorRate != errorRate || len(got.Status.LastDecision.DependencyRequestRates) != 1 || got.Status.LastDecision.DependencyRequestRates[0].RequestRate == nil || *got.Status.LastDecision.DependencyRequestRates[0].RequestRate != dependencyRequestRate {
+		t.Fatalf("request-rate observations were not persisted: %+v", got.Status.LastDecision)
 	}
 }
 

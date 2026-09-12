@@ -27,6 +27,28 @@ func (in *DecisionRecord) DeepCopyInto(out *DecisionRecord) {
 		*out = new(float64)
 		**out = **in
 	}
+	if in.TargetRequestRate != nil {
+		in, out := &in.TargetRequestRate, &out.TargetRequestRate
+		*out = new(float64)
+		**out = **in
+	}
+	if in.TargetSuccessfulRequestRate != nil {
+		in, out := &in.TargetSuccessfulRequestRate, &out.TargetSuccessfulRequestRate
+		*out = new(float64)
+		**out = **in
+	}
+	if in.TargetErrorRate != nil {
+		in, out := &in.TargetErrorRate, &out.TargetErrorRate
+		*out = new(float64)
+		**out = **in
+	}
+	if in.DependencyRequestRates != nil {
+		in, out := &in.DependencyRequestRates, &out.DependencyRequestRates
+		*out = make([]DependencyRequestRate, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.Evidence != nil {
 		in, out := &in.Evidence, &out.Evidence
 		*out = make([]string, len(*in))
@@ -46,6 +68,22 @@ func (in *DecisionRecord) DeepCopy() *DecisionRecord {
 	out := new(DecisionRecord)
 	in.DeepCopyInto(out)
 	return out
+}
+
+func (in *DependencyRequestRate) DeepCopyInto(out *DependencyRequestRate) {
+	*out = *in
+	if in.RequestRate != nil {
+		out.RequestRate = new(float64)
+		*out.RequestRate = *in.RequestRate
+	}
+	if in.SuccessfulRequestRate != nil {
+		out.SuccessfulRequestRate = new(float64)
+		*out.SuccessfulRequestRate = *in.SuccessfulRequestRate
+	}
+	if in.ErrorRate != nil {
+		out.ErrorRate = new(float64)
+		*out.ErrorRate = *in.ErrorRate
+	}
 }
 
 func (in *OptiScaler) DeepCopyInto(out *OptiScaler) {

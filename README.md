@@ -73,7 +73,7 @@ Reapplying `deploy/inventory/deployment.yaml` restores `INVENTORY_DB_DELAY_MS=0`
 
 ## Metrics and policy
 
-Both HTTP services export `http_requests_total`, `http_errors_total`, `http_active_requests`, `http_active_work`, and `http_request_duration_seconds` on `/metrics`. Inventory additionally exports `db_requests_total`, `db_errors_total`, `db_active_requests`, and the `db_request_duration_seconds` histogram around actual PostgreSQL queries. These are application-observed query metrics, not database-internal utilization. The API utilization signal specifically measures local API work, not time blocked on the dependency. The sample uses these actual metric names:
+Both HTTP services export monotonic `http_requests_total` and `http_errors_total` counters alongside `http_active_requests`, `http_active_work`, and `http_request_duration_seconds`. `http_errors_total` counts requests the app actually returns as errors; successful RPS is derived as total RPS minus error RPS. Inventory additionally exports `db_requests_total`, `db_errors_total`, `db_active_requests`, and the `db_request_duration_seconds` histogram around actual PostgreSQL queries. These are application-observed query metrics, not database-internal utilization. The API utilization signal specifically measures local API work, not time blocked on the dependency. The sample uses these actual metric names:
 
 - Target p95: `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-api"}[1m]))) * 1000`
 - Target active work: `sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="demo-api"}[1m]))` (threshold `30`)
@@ -81,8 +81,18 @@ Both HTTP services export `http_requests_total`, `http_errors_total`, `http_acti
 - Inventory active work: `sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="inventory-service"}[1m]))` (threshold `100`; latency is the dependency scenario signal)
 - PostgreSQL-query p95: `histogram_quantile(0.95, sum by (le) (rate(db_request_duration_seconds_bucket{namespace="optiscale-demo",app="inventory-service"}[1m]))) * 1000` (threshold `250ms`)
 - In-flight PostgreSQL queries: `sum(avg_over_time(db_active_requests{namespace="optiscale-demo",app="inventory-service"}[1m]))` (threshold `8`)
+- Target request RPS: `sum(rate(http_requests_total{namespace="optiscale-demo",app="demo-api"}[1m]))`
+- Target error RPS: `sum(rate(http_errors_total{namespace="optiscale-demo",app="demo-api"}[1m]))`
+- Inventory request RPS: `sum(rate(http_requests_total{namespace="optiscale-demo",app="inventory-service"}[1m]))`
+- Inventory error RPS: `sum(rate(http_errors_total{namespace="optiscale-demo",app="inventory-service"}[1m]))`
+- PostgreSQL-query RPS: `sum(rate(db_requests_total{namespace="optiscale-demo",app="inventory-service"}[1m]))`
+- PostgreSQL-query error RPS: `sum(rate(db_errors_total{namespace="optiscale-demo",app="inventory-service"}[1m]))`
+
+For each component, `errorRate = error RPS / total RPS` and `successful RPS = total RPS - error RPS`. Error rate is a ratio from `0` to `1`. A zero request-rate denominator leaves error rate absent/undefined, not `0`.
 
 When target p95 exceeds its SLO and target active-work evidence exceeds its threshold, the policy may scale the target. If the target is not locally saturated, a saturated scalable dependency may be scaled. The sample topology declares `inventory-service` as depending on `postgres`: when PostgreSQL is saturated, inventory latency alone is treated as downstream evidence. A non-scalable saturated database produces `CAPACITY_BLOCKED` and `HOLD`, with concrete threshold evidence and rejected upstream scale actions; independent upstream utilization saturation keeps attribution conservative. Decisions use configured bounds, step limits, and cooldown. Missing or invalid telemetry enters protected mode. No replica write is made for a no-op.
+
+The signal roles remain distinct: p95/SLO describes user impact; active work indicates local constraint; request and successful-request rates describe served demand; and error ratio describes reliability/telemetry health. Request/error rates are recorded in `status.lastDecision` as capacity-model inputs only and do not change the existing scale policy. When the request-rate denominator is zero, request and successful RPS can be zero while the error ratio remains absent/undefined; missing error telemetry is never represented as zero errors.
 
 `status.lastDecision` contains the latest analysis, evidence, qualitative confidence, action, chosen workload, and replica values. `status.currentReplicas` and `desiredReplicas` continue to describe the primary `demo-api` target. `status.lastScaleDecision` retains the most recent mutating decision across later HOLD or protected-mode evaluations.
 

@@ -63,6 +63,7 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 			P95Latency:           metricObservation(ctx, prom, resource.Spec.Metric.PrometheusQuery, now),
 			Utilization:          metricObservation(ctx, prom, resource.Spec.Metric.UtilizationQuery, now),
 			UtilizationThreshold: resource.Spec.Metric.UtilizationThreshold,
+			RequestRates:         requestRatesObservation(ctx, prom, resource.Spec.Metric.RequestRateQuery, resource.Spec.Metric.ErrorRequestRateQuery, now),
 		},
 	}
 	components := make(map[string]policy.ComponentInput, len(resource.Spec.Dependencies))
@@ -74,6 +75,7 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 		depErr := r.SubResource("scale").Get(ctx, depDeployment, &depScale)
 		latency := metricObservation(ctx, prom, dependency.Metrics.LatencyQuery, now)
 		utilization := metricObservation(ctx, prom, dependency.Metrics.UtilizationQuery, now)
+		requestRates := requestRatesObservation(ctx, prom, dependency.Metrics.RequestRateQuery, dependency.Metrics.ErrorRequestRateQuery, now)
 		current := depScale.Spec.Replicas
 		if depErr != nil {
 			latency.Valid, latency.Fresh = false, false
@@ -84,6 +86,7 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 			Name: dependency.Name, DependsOn: dependency.DependsOn, CurrentReplicas: current, P95Latency: latency, Utilization: utilization,
 			LatencyThreshold: dependency.Thresholds.LatencyMilliseconds, UtilizationThreshold: dependency.Thresholds.Utilization,
 			Scalable: dependency.Scalable, MinReplicas: dependency.MinReplicas, MaxReplicas: dependency.MaxReplicas,
+			RequestRates: requestRates,
 		})
 		components[dependency.Name] = policy.ComponentInput{Name: dependency.Name, CurrentReplicas: current, MinReplicas: dependency.MinReplicas, MaxReplicas: dependency.MaxReplicas, Scalable: dependency.Scalable}
 		entries[dependency.Name] = scaleEntry{deployment: depDeployment, scale: depScale, key: depKey}
@@ -136,6 +139,10 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 		DetectedBottleneck:            string(analysis.Classification), BottleneckComponent: analysis.Component,
 		Confidence: string(analysis.Confidence),
 		Evidence:   analysis.Evidence, ChosenTarget: chosenTarget, RejectedActions: rejected,
+		TargetRequestRate:           metricValuePointer(snapshot.Target.RequestRates.RequestRate),
+		TargetSuccessfulRequestRate: metricValuePointer(snapshot.Target.RequestRates.SuccessfulRequestRate),
+		TargetErrorRate:             metricValuePointer(snapshot.Target.RequestRates.ErrorRate),
+		DependencyRequestRates:      dependencyRequestRateRecords(snapshot.Dependencies),
 	}
 	if policyDecision.HasThreshold {
 		recordInput.Threshold = float64Ptr(policyDecision.Threshold)
@@ -165,6 +172,35 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 	}
 	log.FromContext(ctx).Info("capacity decision", "target", resource.Spec.ScaleTargetRef.Name, "targetP95Milliseconds", metricLogValue(snapshot.Target.P95Latency), "sloTargetP95Milliseconds", resource.Spec.SLO.TargetP95Milliseconds, "bottleneck", analysis.Classification, "component", analysis.Component, "action", policyDecision.Action, "chosenWorkload", chosenTarget, "currentReplicas", policyDecision.CurrentReplicas, "desiredReplicas", policyDecision.DesiredReplicas, "reason", policyDecision.Reason)
 	return reconcile.Result{RequeueAfter: reconcileInterval}, r.updateStatus(ctx, resource, status)
+}
+
+func requestRatesObservation(ctx context.Context, prom *promclient.Client, requestRateQuery, errorRequestRateQuery string, now time.Time) observation.RequestRates {
+	requestRate := metricObservation(ctx, prom, requestRateQuery, now)
+	errorRequestRate := metricObservation(ctx, prom, errorRequestRateQuery, now)
+	return observation.DeriveRequestRates(requestRate, errorRequestRate)
+}
+
+func metricValuePointer(metric observation.Metric) *float64 {
+	if !metric.Valid || !metric.Fresh || metric.ObservedAt.IsZero() || math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) || metric.Value < 0 {
+		return nil
+	}
+	return float64Ptr(metric.Value)
+}
+
+func dependencyRequestRateRecords(dependencies []observation.DependencyObservation) []optiscalev1alpha1.DependencyRequestRate {
+	if len(dependencies) == 0 {
+		return nil
+	}
+	records := make([]optiscalev1alpha1.DependencyRequestRate, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		records = append(records, optiscalev1alpha1.DependencyRequestRate{
+			Name:                  dependency.Name,
+			RequestRate:           metricValuePointer(dependency.RequestRates.RequestRate),
+			SuccessfulRequestRate: metricValuePointer(dependency.RequestRates.SuccessfulRequestRate),
+			ErrorRate:             metricValuePointer(dependency.RequestRates.ErrorRate),
+		})
+	}
+	return records
 }
 
 func metricObservation(ctx context.Context, prom *promclient.Client, query string, now time.Time) observation.Metric {
@@ -268,11 +304,19 @@ func (r *OptiScalerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		Cooldown:            time.Duration(resource.Spec.Policy.CooldownSeconds) * time.Second,
 		LastScaleTime:       lastScale,
 	})
+	requestRates := requestRatesObservation(ctx, prom, resource.Spec.Metric.RequestRateQuery, resource.Spec.Metric.ErrorRequestRateQuery, now)
 
 	status.ObservedMetric = float64Ptr(observation.Value)
 	status.DesiredReplicas = policyDecision.DesiredReplicas
 	status.ControlMode = controlMode(policyDecision.Action)
-	recordInput := decision.Input{Action: string(policyDecision.Action), Reason: policyDecision.Reason, ObservedMetric: float64Ptr(observation.Value), CurrentReplicas: current, DesiredReplicas: policyDecision.DesiredReplicas, ObservedAt: observation.Timestamp}
+	recordInput := decision.Input{
+		Action: string(policyDecision.Action), Reason: policyDecision.Reason,
+		ObservedMetric: float64Ptr(observation.Value), CurrentReplicas: current,
+		DesiredReplicas: policyDecision.DesiredReplicas, ObservedAt: observation.Timestamp,
+		TargetRequestRate:           metricValuePointer(requestRates.RequestRate),
+		TargetSuccessfulRequestRate: metricValuePointer(requestRates.SuccessfulRequestRate),
+		TargetErrorRate:             metricValuePointer(requestRates.ErrorRate),
+	}
 	if policyDecision.HasThreshold {
 		recordInput.Threshold = float64Ptr(policyDecision.Threshold)
 	}
@@ -336,6 +380,9 @@ func validateSpec(spec optiscalev1alpha1.OptiScalerSpec) error {
 	if strings.TrimSpace(spec.Metric.PrometheusQuery) == "" {
 		return fmt.Errorf("metric.prometheusQuery is required")
 	}
+	if err := validateRateQueryPair(spec.Metric.RequestRateQuery, spec.Metric.ErrorRequestRateQuery, "metric"); err != nil {
+		return err
+	}
 	if len(spec.Dependencies) > 0 && strings.TrimSpace(spec.Metric.UtilizationQuery) == "" {
 		return fmt.Errorf("metric.utilizationQuery is required when dependencies are configured")
 	}
@@ -381,6 +428,9 @@ func validateSpec(spec optiscalev1alpha1.OptiScalerSpec) error {
 		if strings.TrimSpace(dependency.Metrics.LatencyQuery) == "" || strings.TrimSpace(dependency.Metrics.UtilizationQuery) == "" {
 			return fmt.Errorf("dependency %q metric queries are required", dependency.Name)
 		}
+		if err := validateRateQueryPair(dependency.Metrics.RequestRateQuery, dependency.Metrics.ErrorRequestRateQuery, "dependency "+dependency.Name); err != nil {
+			return err
+		}
 		if math.IsNaN(dependency.Thresholds.LatencyMilliseconds) || math.IsInf(dependency.Thresholds.LatencyMilliseconds, 0) || dependency.Thresholds.LatencyMilliseconds < 0 || math.IsNaN(dependency.Thresholds.Utilization) || math.IsInf(dependency.Thresholds.Utilization, 0) || dependency.Thresholds.Utilization < 0 {
 			return fmt.Errorf("dependency %q thresholds must be finite and nonnegative", dependency.Name)
 		}
@@ -395,6 +445,15 @@ func validateSpec(spec optiscalev1alpha1.OptiScalerSpec) error {
 		if _, exists := seen[dependency.DependsOn]; !exists {
 			return fmt.Errorf("dependency %q refers to unconfigured dependsOn %q", dependency.Name, dependency.DependsOn)
 		}
+	}
+	return nil
+}
+
+func validateRateQueryPair(requestRateQuery, errorRequestRateQuery, component string) error {
+	requestRateMissing := strings.TrimSpace(requestRateQuery) == ""
+	errorRateMissing := strings.TrimSpace(errorRequestRateQuery) == ""
+	if requestRateMissing != errorRateMissing {
+		return fmt.Errorf("%s requestRateQuery and errorRequestRateQuery must be configured together", component)
 	}
 	return nil
 }

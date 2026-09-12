@@ -9,6 +9,10 @@ import (
 
 func TestDatabaseTelemetryExposesObservedQuerySignals(t *testing.T) {
 	metrics := newTelemetry()
+	metrics.begin()
+	metrics.begin()
+	metrics.observe(10*time.Millisecond, false)
+	metrics.observe(20*time.Millisecond, true)
 	metrics.beginDB()
 	metrics.observeDB(850*time.Millisecond, true)
 
@@ -16,6 +20,8 @@ func TestDatabaseTelemetryExposesObservedQuerySignals(t *testing.T) {
 	metrics.write(response)
 	body := response.Body.String()
 	for _, want := range []string{
+		"http_requests_total 2",
+		"http_errors_total 1",
 		"db_requests_total 1",
 		"db_errors_total 1",
 		"db_active_requests 0",

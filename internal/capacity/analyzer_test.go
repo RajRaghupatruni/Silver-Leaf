@@ -63,6 +63,53 @@ func TestAnalyze(t *testing.T) {
 	}
 }
 
+func TestRequestTelemetryDoesNotChangeCapacityClassification(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	metric := func(value float64) observation.Metric {
+		return observation.Metric{Value: value, ObservedAt: now, Valid: true, Fresh: true}
+	}
+	rates := observation.RequestRates{RequestRate: metric(100), SuccessfulRequestRate: metric(95), ErrorRate: metric(0.05)}
+	tests := []struct {
+		name       string
+		target     observation.TargetObservation
+		dependency observation.DependencyObservation
+		want       Classification
+	}{
+		{
+			name:       "healthy despite errors",
+			target:     observation.TargetObservation{P95Latency: metric(100), Utilization: metric(1), UtilizationThreshold: 2, RequestRates: rates},
+			dependency: observation.DependencyObservation{Name: "inventory", P95Latency: metric(30), Utilization: metric(1), LatencyThreshold: 250, UtilizationThreshold: 2, Scalable: true, RequestRates: rates},
+			want:       Healthy,
+		},
+		{
+			name:       "target saturation remains latency and local work",
+			target:     observation.TargetObservation{P95Latency: metric(400), Utilization: metric(4), UtilizationThreshold: 2, RequestRates: rates},
+			dependency: observation.DependencyObservation{Name: "inventory", P95Latency: metric(30), Utilization: metric(1), LatencyThreshold: 250, UtilizationThreshold: 2, Scalable: true, RequestRates: rates},
+			want:       TargetSaturated,
+		},
+		{
+			name:       "dependency saturation remains unchanged",
+			target:     observation.TargetObservation{P95Latency: metric(400), Utilization: metric(1), UtilizationThreshold: 2, RequestRates: rates},
+			dependency: observation.DependencyObservation{Name: "inventory", P95Latency: metric(500), Utilization: metric(1), LatencyThreshold: 250, UtilizationThreshold: 2, Scalable: true, RequestRates: rates},
+			want:       DependencySaturated,
+		},
+		{
+			name:       "blocked dependency remains unchanged",
+			target:     observation.TargetObservation{P95Latency: metric(400), Utilization: metric(1), UtilizationThreshold: 2, RequestRates: rates},
+			dependency: observation.DependencyObservation{Name: "postgres", P95Latency: metric(500), Utilization: metric(10), LatencyThreshold: 250, UtilizationThreshold: 8, Scalable: false, RequestRates: rates},
+			want:       CapacityBlocked,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Analyze(observation.Snapshot{SLOTargetP95Milliseconds: 250, Target: tt.target, Dependencies: []observation.DependencyObservation{tt.dependency}})
+			if got.Classification != tt.want {
+				t.Fatalf("classification = %s, want %s", got.Classification, tt.want)
+			}
+		})
+	}
+}
+
 func TestNonScalableDownstreamBottleneckBlocksUpstreamScaling(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	metric := func(value float64) observation.Metric {

@@ -65,6 +65,10 @@ type MetricSpec struct {
 	// UtilizationThreshold is the target saturation boundary for UtilizationQuery.
 	// +kubebuilder:validation:Minimum=0
 	UtilizationThreshold float64 `json:"utilizationThreshold,omitempty"`
+	// RequestRateQuery returns total requests per second from a monotonically increasing counter.
+	RequestRateQuery string `json:"requestRateQuery,omitempty"`
+	// ErrorRequestRateQuery returns failed requests per second from a monotonically increasing counter.
+	ErrorRequestRateQuery string `json:"errorRequestRateQuery,omitempty"`
 }
 
 type DependencySpec struct {
@@ -89,6 +93,10 @@ type DependencyMetricsSpec struct {
 	LatencyQuery string `json:"latencyQuery"`
 	// +kubebuilder:validation:MinLength=1
 	UtilizationQuery string `json:"utilizationQuery"`
+	// RequestRateQuery returns total requests or database queries per second.
+	RequestRateQuery string `json:"requestRateQuery,omitempty"`
+	// ErrorRequestRateQuery returns failed requests or database queries per second.
+	ErrorRequestRateQuery string `json:"errorRequestRateQuery,omitempty"`
 }
 
 type DependencyThresholdsSpec struct {
@@ -134,12 +142,28 @@ type DecisionRecord struct {
 	DesiredReplicas               int32       `json:"desiredReplicas"`
 	SLOTargetP95Milliseconds      float64     `json:"sloTargetP95Milliseconds"`
 	ObservedTargetP95Milliseconds *float64    `json:"observedTargetP95Milliseconds,omitempty"`
-	DetectedBottleneck            string      `json:"detectedBottleneck,omitempty"`
-	BottleneckComponent           string      `json:"bottleneckComponent,omitempty"`
-	Confidence                    string      `json:"confidence,omitempty"`
-	Evidence                      []string    `json:"evidence,omitempty"`
-	ChosenTarget                  string      `json:"chosenTarget,omitempty"`
-	RejectedActions               []string    `json:"rejectedActions,omitempty"`
+	// TargetRequestRate is total requests per second; absent means unavailable.
+	TargetRequestRate *float64 `json:"targetRequestRate,omitempty"`
+	// TargetSuccessfulRequestRate is successful requests per second, derived from total minus errors.
+	TargetSuccessfulRequestRate *float64 `json:"targetSuccessfulRequestRate,omitempty"`
+	// TargetErrorRate is error RPS / total RPS, a ratio in [0,1]; absent when undefined or unavailable.
+	TargetErrorRate        *float64                `json:"targetErrorRate,omitempty"`
+	DependencyRequestRates []DependencyRequestRate `json:"dependencyRequestRates,omitempty"`
+	DetectedBottleneck     string                  `json:"detectedBottleneck,omitempty"`
+	BottleneckComponent    string                  `json:"bottleneckComponent,omitempty"`
+	Confidence             string                  `json:"confidence,omitempty"`
+	Evidence               []string                `json:"evidence,omitempty"`
+	ChosenTarget           string                  `json:"chosenTarget,omitempty"`
+	RejectedActions        []string                `json:"rejectedActions,omitempty"`
+}
+
+// DependencyRequestRate summarizes rate observations for a configured dependency.
+// ErrorRate is a ratio in [0,1]; absent values indicate incomplete or undefined telemetry.
+type DependencyRequestRate struct {
+	Name                  string   `json:"name"`
+	RequestRate           *float64 `json:"requestRate,omitempty"`
+	SuccessfulRequestRate *float64 `json:"successfulRequestRate,omitempty"`
+	ErrorRate             *float64 `json:"errorRate,omitempty"`
 }
 
 // OptiScalerStatus defines the observed state of an OptiScaler.

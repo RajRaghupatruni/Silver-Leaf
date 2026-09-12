@@ -21,6 +21,10 @@ type Input struct {
 	ObservedAt                    time.Time
 	SLOTargetP95Milliseconds      float64
 	ObservedTargetP95Milliseconds *float64
+	TargetRequestRate             *float64
+	TargetSuccessfulRequestRate   *float64
+	TargetErrorRate               *float64
+	DependencyRequestRates        []optiscalev1alpha1.DependencyRequestRate
 	DetectedBottleneck            string
 	BottleneckComponent           string
 	Confidence                    string
@@ -40,7 +44,11 @@ func NewRecord(in Input) *optiscalev1alpha1.DecisionRecord {
 		CurrentReplicas:               in.CurrentReplicas,
 		DesiredReplicas:               in.DesiredReplicas,
 		SLOTargetP95Milliseconds:      in.SLOTargetP95Milliseconds,
-		ObservedTargetP95Milliseconds: in.ObservedTargetP95Milliseconds,
+		ObservedTargetP95Milliseconds: cloneFloat64(in.ObservedTargetP95Milliseconds),
+		TargetRequestRate:             cloneFloat64(in.TargetRequestRate),
+		TargetSuccessfulRequestRate:   cloneFloat64(in.TargetSuccessfulRequestRate),
+		TargetErrorRate:               cloneFloat64(in.TargetErrorRate),
+		DependencyRequestRates:        cloneDependencyRates(in.DependencyRequestRates),
 		DetectedBottleneck:            in.DetectedBottleneck,
 		BottleneckComponent:           in.BottleneckComponent,
 		Confidence:                    in.Confidence,
@@ -61,4 +69,26 @@ func pointerValue(value *float64) string {
 		return ""
 	}
 	return strconv.FormatFloat(*value, 'g', -1, 64)
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneDependencyRates(values []optiscalev1alpha1.DependencyRequestRate) []optiscalev1alpha1.DependencyRequestRate {
+	if values == nil {
+		return nil
+	}
+	copy := make([]optiscalev1alpha1.DependencyRequestRate, len(values))
+	for i, value := range values {
+		copy[i] = value
+		copy[i].RequestRate = cloneFloat64(value.RequestRate)
+		copy[i].SuccessfulRequestRate = cloneFloat64(value.SuccessfulRequestRate)
+		copy[i].ErrorRate = cloneFloat64(value.ErrorRate)
+	}
+	return copy
 }
