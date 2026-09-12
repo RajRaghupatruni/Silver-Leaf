@@ -14,6 +14,7 @@ const (
 	Healthy             Classification = "HEALTHY"
 	TargetSaturated     Classification = "TARGET_SATURATED"
 	DependencySaturated Classification = "DEPENDENCY_SATURATED"
+	CapacityBlocked     Classification = "CAPACITY_BLOCKED"
 	Uncertain           Classification = "UNCERTAIN"
 )
 
@@ -26,11 +27,12 @@ const (
 )
 
 type Analysis struct {
-	Classification Classification
-	Component      string
-	Evidence       []string
-	Reason         string
-	Confidence     Confidence
+	Classification  Classification
+	Component       string
+	Evidence        []string
+	RejectedActions []string
+	Reason          string
+	Confidence      Confidence
 }
 
 func Analyze(snapshot observation.Snapshot) Analysis {
@@ -44,7 +46,7 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 		return uncertain("target", "target utilization threshold is invalid")
 	}
 
-	dependencySaturated := make([]observation.DependencyObservation, 0)
+	dependencySaturated := make(map[string]observation.DependencyObservation)
 	for _, dependency := range snapshot.Dependencies {
 		if !usable(dependency.P95Latency) || !usable(dependency.Utilization) {
 			return uncertain(dependency.Name, fmt.Sprintf("dependency %q telemetry is incomplete", dependency.Name))
@@ -53,7 +55,7 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 			return uncertain(dependency.Name, fmt.Sprintf("dependency %q threshold is invalid", dependency.Name))
 		}
 		if dependency.P95Latency.Value > dependency.LatencyThreshold || dependency.Utilization.Value > dependency.UtilizationThreshold {
-			dependencySaturated = append(dependencySaturated, dependency)
+			dependencySaturated[dependency.Name] = dependency
 		}
 	}
 
@@ -67,12 +69,6 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 			Confidence:     ConfidenceHigh,
 		}
 	}
-	if len(dependencySaturated) > 0 && targetSaturated {
-		return uncertain("target and dependency", "target and dependency saturation are both present; causal attribution is uncertain")
-	}
-	if len(dependencySaturated) > 1 {
-		return uncertain("multiple dependencies", "multiple dependencies show saturation evidence; bottleneck attribution is uncertain")
-	}
 	if targetSaturated {
 		return Analysis{
 			Classification: TargetSaturated,
@@ -85,8 +81,28 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 			Confidence: ConfidenceHigh,
 		}
 	}
-	if len(dependencySaturated) > 0 {
-		dependency := dependencySaturated[0]
+	rootCandidates := make([]observation.DependencyObservation, 0, len(dependencySaturated))
+	for _, dependency := range snapshot.Dependencies {
+		if _, saturated := dependencySaturated[dependency.Name]; !saturated {
+			continue
+		}
+		if dependency.DependsOn != "" {
+			if _, downstreamSaturated := dependencySaturated[dependency.DependsOn]; downstreamSaturated {
+				// Downstream latency can inflate this component's request latency.
+				// Its independent utilization signal may still indicate a separate
+				// bottleneck, in which case attribution must remain conservative.
+				if dependency.Utilization.Value <= dependency.UtilizationThreshold {
+					continue
+				}
+			}
+		}
+		rootCandidates = append(rootCandidates, dependency)
+	}
+	if len(rootCandidates) > 1 {
+		return uncertain("multiple dependencies", "multiple independent dependencies show saturation evidence; bottleneck attribution is uncertain")
+	}
+	if len(rootCandidates) == 1 {
+		dependency := rootCandidates[0]
 		confidence := ConfidenceHigh
 		latencyExceeded := dependency.P95Latency.Value > dependency.LatencyThreshold
 		utilizationExceeded := dependency.Utilization.Value > dependency.UtilizationThreshold
@@ -99,6 +115,39 @@ func Analyze(snapshot observation.Snapshot) Analysis {
 		}
 		if latencyExceeded != utilizationExceeded {
 			confidence = ConfidenceMedium
+		}
+		if !dependency.Scalable {
+			evidence = append(evidence, fmt.Sprintf("dependency %q is configured non-scalable", dependency.Name))
+			if snapshot.Target.Utilization.Value <= snapshot.Target.UtilizationThreshold {
+				evidence = append(evidence, fmt.Sprintf("target utilization %.2f is at or below threshold %.2f", snapshot.Target.Utilization.Value, snapshot.Target.UtilizationThreshold))
+			}
+			upstream := make([]string, 0, 1)
+			for _, candidate := range snapshot.Dependencies {
+				if candidate.DependsOn == dependency.Name {
+					upstream = append(upstream, candidate.Name)
+					evidence = append(evidence, fmt.Sprintf("dependency %q depends on %q; its latency is downstream evidence", candidate.Name, dependency.Name))
+				}
+			}
+			targetName := snapshot.Target.Name
+			if targetName == "" {
+				targetName = "target"
+			}
+			reason := fmt.Sprintf("capacity is blocked by non-scalable dependency %q; target %q is not locally saturated", dependency.Name, targetName)
+			if len(upstream) > 0 {
+				reason += fmt.Sprintf(", and scaling upstream dependency %q would not add database capacity", strings.Join(upstream, ", "))
+			}
+			reason += "; adding target replicas would not relieve the database bottleneck"
+			return Analysis{
+				Classification: CapacityBlocked,
+				Component:      dependency.Name,
+				Evidence:       evidence,
+				Reason:         reason,
+				Confidence:     confidence,
+				RejectedActions: []string{
+					fmt.Sprintf("SCALE_TARGET: target %q is not locally saturated", targetName),
+					fmt.Sprintf("SCALE_DEPENDENCY: bottleneck dependency %q is non-scalable", dependency.Name),
+				},
+			}
 		}
 		return Analysis{
 			Classification: DependencySaturated,

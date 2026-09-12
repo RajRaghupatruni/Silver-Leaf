@@ -35,6 +35,26 @@ spec:
               value: "25"
             - name: INVENTORY_CONCURRENCY
               value: "20"
+            - name: INVENTORY_DB_DELAY_MS
+              value: "0"
+            - name: DATABASE_HOST
+              value: postgres.optiscale-demo.svc.cluster.local
+            - name: DATABASE_PORT
+              value: "5432"
+            - name: DATABASE_NAME
+              value: optiscale
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: optiscale-postgres
+                  key: username
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: optiscale-postgres
+                  key: password
+            - name: DATABASE_MAX_OPEN_CONNS
+              value: "40"
           resources:
             requests:
               cpu: 50m

@@ -27,6 +27,31 @@ func TestValidateSpec(t *testing.T) {
 	if err := validateSpec(spec); err != nil {
 		t.Fatalf("valid spec rejected: %v", err)
 	}
+	spec.Metric.UtilizationQuery = "active"
+	spec.Metric.UtilizationThreshold = 30
+	spec.Dependencies = []optiscalev1alpha1.DependencySpec{
+		{
+			Name: "inventory-service", DependsOn: "postgres",
+			ScaleTargetRef: optiscalev1alpha1.ScaleTargetReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "inventory-service"},
+			Metrics:        optiscalev1alpha1.DependencyMetricsSpec{LatencyQuery: "latency", UtilizationQuery: "active"},
+			Thresholds:     optiscalev1alpha1.DependencyThresholdsSpec{LatencyMilliseconds: 250, Utilization: 100},
+			Scalable:       true, MinReplicas: 1, MaxReplicas: 5,
+		},
+		{
+			Name:           "postgres",
+			ScaleTargetRef: optiscalev1alpha1.ScaleTargetReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "postgres"},
+			Metrics:        optiscalev1alpha1.DependencyMetricsSpec{LatencyQuery: "latency", UtilizationQuery: "active"},
+			Thresholds:     optiscalev1alpha1.DependencyThresholdsSpec{LatencyMilliseconds: 250, Utilization: 8},
+			MinReplicas:    1, MaxReplicas: 1,
+		},
+	}
+	if err := validateSpec(spec); err != nil {
+		t.Fatalf("valid dependency topology rejected: %v", err)
+	}
+	spec.Dependencies[0].DependsOn = "missing"
+	if err := validateSpec(spec); err == nil {
+		t.Fatal("unconfigured downstream dependency accepted")
+	}
 	spec.MaxReplicas = 0
 	if err := validateSpec(spec); err == nil {
 		t.Fatal("invalid replica bounds accepted")
@@ -45,9 +70,15 @@ func TestStatusDecisionRecordCreation(t *testing.T) {
 	now := time.Now().UTC()
 	status := resource.Status
 	status.CurrentReplicas = 2
-	status.DesiredReplicas = 3
-	status.ControlMode = optiscalev1alpha1.ControlModeAutomatic
-	status.LastDecision = decision.NewRecord(decision.Input{Action: string(optiscalev1alpha1.ActionScaleTarget), Reason: "scale-up threshold exceeded", ObservedMetric: &metric, CurrentReplicas: 2, DesiredReplicas: 3, ObservedAt: now})
+	status.DesiredReplicas = 2
+	status.ControlMode = optiscalev1alpha1.ControlModeHold
+	status.LastDecision = decision.NewRecord(decision.Input{
+		Action: string(optiscalev1alpha1.ActionHold), Reason: "capacity is blocked by non-scalable dependency postgres",
+		ObservedMetric: &metric, CurrentReplicas: 1, DesiredReplicas: 1, ObservedAt: now,
+		DetectedBottleneck: "CAPACITY_BLOCKED", BottleneckComponent: "postgres", Confidence: "HIGH",
+		Evidence: []string{"database p95 exceeds threshold"}, ChosenTarget: "postgres",
+		RejectedActions: []string{"SCALE_TARGET: target is not locally saturated", "SCALE_DEPENDENCY: dependency is non-scalable"},
+	})
 	if err := r.updateStatus(context.Background(), resource, status); err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +86,11 @@ func TestStatusDecisionRecordCreation(t *testing.T) {
 	if err := client.Get(context.Background(), types.NamespacedName{Name: "demo", Namespace: "optiscale-demo"}, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.LastDecision == nil || got.Status.LastDecision.Action != optiscalev1alpha1.ActionScaleTarget {
+	if got.Status.LastDecision == nil || got.Status.LastDecision.Action != optiscalev1alpha1.ActionHold {
 		t.Fatalf("unexpected status: %+v", got.Status)
+	}
+	if got.Status.LastDecision.DetectedBottleneck != "CAPACITY_BLOCKED" || got.Status.LastDecision.BottleneckComponent != "postgres" || got.Status.LastDecision.Confidence != "HIGH" || len(got.Status.LastDecision.RejectedActions) != 2 {
+		t.Fatalf("capacity-blocked DecisionRecord fields were not persisted: %+v", got.Status.LastDecision)
 	}
 }
 

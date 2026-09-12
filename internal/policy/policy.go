@@ -76,6 +76,23 @@ func EvaluateCapacity(in CapacityInput) CapacityDecision {
 		decision.Reason = "invalid target configuration: " + err.Error()
 		return decision
 	}
+	if in.Analysis.Classification == capacity.CapacityBlocked {
+		candidate, ok := in.Dependencies[in.Analysis.Component]
+		if !ok || candidate.Scalable {
+			decision.Reason = "capacity-blocked analysis does not identify a configured non-scalable dependency"
+			return decision
+		}
+		if err := validateComponent(candidate, in.MaxScaleUpStep, in.MaxScaleDownStep); err != nil {
+			decision.Reason = "invalid blocked dependency configuration: " + err.Error()
+			return decision
+		}
+		decision.Action = ActionHold
+		decision.ChosenComponent = candidate.Name
+		decision.CurrentReplicas = candidate.CurrentReplicas
+		decision.DesiredReplicas = candidate.CurrentReplicas
+		decision.Reason = in.Analysis.Reason
+		return decision
+	}
 	if in.LastScaleTime != nil && in.Cooldown > 0 && in.Now.Before(in.LastScaleTime.Add(in.Cooldown)) {
 		decision.Action = ActionHold
 		decision.Reason = "cooldown active"

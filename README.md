@@ -1,18 +1,18 @@
-# OptiScale — Vertical Slice 2
+# OptiScale — Vertical Slice 3
 
-OptiScale is an explainable, SLO-aware, dependency-aware Kubernetes Capacity Governor. This repository currently implements a bounded two-Deployment demonstration: `demo-api` calls `inventory-service`, both export Prometheus telemetry, and a namespaced OptiScaler can scale either Deployment through the Kubernetes `/scale` subresource.
+OptiScale is an explainable, SLO-aware Kubernetes Capacity Governor. Vertical Slice 3 demonstrates a bounded local topology: `demo-api` calls `inventory-service`, which executes real queries against a local PostgreSQL Deployment. Prometheus observes application request and database-query telemetry. A namespaced OptiScaler can scale `demo-api` or a configured scalable dependency through Kubernetes `/scale`; it identifies a saturated non-scalable PostgreSQL dependency as `CAPACITY_BLOCKED` and holds rather than adding ineffective upstream replicas.
 
 ```text
-load generator → demo-api → inventory-service
-                     ↓              ↓
-                  Prometheus Kubernetes pod discovery
-                     ↓
-             typed observations → capacity analyzer → guarded policy
-                     ↓                               ↓
-                DecisionRecord ← Kubernetes Deployment /scale
+load generator → demo-api → inventory-service → PostgreSQL
+                     └──────── Prometheus pod discovery ───────┘
+                                      ↓
+                  typed observations → analyzer → guarded policy
+                         CAPACITY_BLOCKED → HOLD (no scale write)
+                                      ↓
+                    Deployment /scale + DecisionRecord
 ```
 
-The analyzer classifies evidence as `HEALTHY`, `TARGET_SATURATED`, `DEPENDENCY_SATURATED`, or `UNCERTAIN`. These are deterministic rules over the configured latency and active-request metrics, not causal inference. Missing, stale, malformed, or conflicting evidence is protected and cannot cause scale-down. Forecasting, machine learning, dependency graphs beyond the configured P0 dependency list, PostgreSQL bottleneck logic, OpenTelemetry, Grafana, Karpenter, capacity learning, replay, and sophisticated optimization are not implemented.
+The analyzer classifies evidence as `HEALTHY`, `TARGET_SATURATED`, `DEPENDENCY_SATURATED`, `CAPACITY_BLOCKED`, or `UNCERTAIN`. The database scenario uses real inventory queries and application-observed database latency, errors, and in-flight query metrics; the query includes a configurable PostgreSQL `pg_sleep` delay for deterministic local testing. These measurements do not claim database CPU or internal wait-state telemetry. Missing, stale, malformed, or conflicting evidence is protected and cannot cause scale-down. Forecasting, machine learning, OpenTelemetry, Grafana, Karpenter, capacity learning, replay, and sophisticated optimization are not implemented.
 
 ## Run locally with Minikube
 
@@ -20,6 +20,8 @@ Prerequisites: Go 1.23+, Docker, kubectl, Minikube, and Make (or run the command
 
 ```powershell
 minikube start
+kubectl apply -f deploy/namespace.yaml
+.\deploy\postgres\create-secret.ps1
 make docker-build
 make minikube-load
 make install
@@ -27,13 +29,15 @@ make loadgen
 make status
 ```
 
-The install applies the namespace, CRD, namespaced RBAC, Prometheus, both demo services, controller, and sample OptiScaler in dependency order. To inspect the explainable decision and replica counts:
+The install applies the namespace, CRD, namespaced RBAC, Prometheus, PostgreSQL, both HTTP services, controller, and sample OptiScaler in dependency order. To inspect the explainable decision and replica counts:
 
 ```powershell
 kubectl -n optiscale-demo get optiscaler demo-api -w
 kubectl -n optiscale-demo get deployment demo-api inventory-service -w
 kubectl -n optiscale-system logs deployment/optiscaler-controller -f
 ```
+
+The PostgreSQL pod uses the pinned `postgres:16.4-alpine` image, non-root UID/GID 70, bounded resources, and ephemeral `emptyDir` storage for this local lab. The secret is not checked in. The included script uses a clearly warned local-only password if none is supplied; never reuse it outside an isolated development cluster.
 
 ### Deterministic evidence profiles
 
@@ -51,6 +55,12 @@ Expected decision: `TARGET_SATURATED` and `SCALE_TARGET` for `demo-api`; invento
 
 Expected decision: `DEPENDENCY_SATURATED` and `SCALE_DEPENDENCY` for `inventory-service`; the demo API's short local work keeps target saturation evidence low. The decision describes configured metric evidence and does not claim causal certainty.
 
+```powershell
+.\deploy\scenarios\database-bottleneck.ps1
+```
+
+Expected decision: `CAPACITY_BLOCKED` / `HOLD`, with `postgres` as the bottleneck. The API and inventory local-work signals stay below their thresholds while real inventory SQL calls wait inside PostgreSQL. Inventory request latency is recorded as downstream evidence, not treated as proof that adding inventory replicas helps. The decision should list rejected `SCALE_TARGET` and `SCALE_DEPENDENCY` actions. Confirm that both `demo-api` and `inventory-service` replica counts remain unchanged.
+
 Restore baseline settings by reapplying the deployment manifests and restarting load generation:
 
 ```powershell
@@ -59,16 +69,20 @@ kubectl apply -f deploy/demo-app/deployment.yaml
 kubectl apply -f deploy/loadgen/deployment.yaml
 ```
 
+Reapplying `deploy/inventory/deployment.yaml` restores `INVENTORY_DB_DELAY_MS=0` and baseline inventory settings.
+
 ## Metrics and policy
 
-Both services export `http_requests_total`, `http_errors_total`, `http_active_requests`, `http_active_work`, and `http_request_duration_seconds` on `/metrics`. The API utilization signal specifically measures local API work, not time blocked on the dependency. The sample uses these actual metric names:
+Both HTTP services export `http_requests_total`, `http_errors_total`, `http_active_requests`, `http_active_work`, and `http_request_duration_seconds` on `/metrics`. Inventory additionally exports `db_requests_total`, `db_errors_total`, `db_active_requests`, and the `db_request_duration_seconds` histogram around actual PostgreSQL queries. These are application-observed query metrics, not database-internal utilization. The API utilization signal specifically measures local API work, not time blocked on the dependency. The sample uses these actual metric names:
 
 - Target p95: `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="demo-api"}[1m]))) * 1000`
 - Target active work: `sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="demo-api"}[1m]))` (threshold `30`)
 - Inventory p95: `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="optiscale-demo",app="inventory-service"}[1m]))) * 1000`
 - Inventory active work: `sum(avg_over_time(http_active_work{namespace="optiscale-demo",app="inventory-service"}[1m]))` (threshold `100`; latency is the dependency scenario signal)
+- PostgreSQL-query p95: `histogram_quantile(0.95, sum by (le) (rate(db_request_duration_seconds_bucket{namespace="optiscale-demo",app="inventory-service"}[1m]))) * 1000` (threshold `250ms`)
+- In-flight PostgreSQL queries: `sum(avg_over_time(db_active_requests{namespace="optiscale-demo",app="inventory-service"}[1m]))` (threshold `8`)
 
-When the target p95 is above its SLO and target active-work evidence exceeds its threshold, the policy may scale the target. When target saturation is absent and a configured dependency crosses its latency or utilization threshold, it may scale that dependency if `scalable: true`. Both decisions use configured min/max bounds, step limits, and cooldown. Healthy evidence holds; invalid bounds, unavailable telemetry, conflicting bottlenecks, or an unscalable dependency enter protected mode. No replica write is made for a no-op.
+When target p95 exceeds its SLO and target active-work evidence exceeds its threshold, the policy may scale the target. If the target is not locally saturated, a saturated scalable dependency may be scaled. The sample topology declares `inventory-service` as depending on `postgres`: when PostgreSQL is saturated, inventory latency alone is treated as downstream evidence. A non-scalable saturated database produces `CAPACITY_BLOCKED` and `HOLD`, with concrete threshold evidence and rejected upstream scale actions; independent upstream utilization saturation keeps attribution conservative. Decisions use configured bounds, step limits, and cooldown. Missing or invalid telemetry enters protected mode. No replica write is made for a no-op.
 
 `status.lastDecision` contains the latest analysis, evidence, qualitative confidence, action, chosen workload, and replica values. `status.currentReplicas` and `desiredReplicas` continue to describe the primary `demo-api` target. `status.lastScaleDecision` retains the most recent mutating decision across later HOLD or protected-mode evaluations.
 
@@ -81,7 +95,9 @@ When the target p95 is above its SLO and target active-work evidence exceeds its
 - `internal/controller`: reconciliation and Deployment scale-subresource calls.
 - `deploy/`: canonical namespace, demo workloads, load generator, and scenario profiles.
 - `config/`: CRD, RBAC, Prometheus, controller, and sample resource.
-- `docs/architecture.md`: implemented V2 behavior and safety boundaries.
+- `deploy/postgres/`: local PostgreSQL, schema seed, and local-only Secret helper.
+- `deploy/scenarios/`: deterministic target, dependency, and database bottleneck profiles.
+- `docs/architecture.md`: implemented V3 behavior and safety boundaries.
 
 ## Checks
 

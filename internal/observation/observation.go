@@ -13,6 +13,7 @@ type Metric struct {
 }
 
 type TargetObservation struct {
+	Name                 string
 	CurrentReplicas      int32
 	P95Latency           Metric
 	Utilization          Metric
@@ -21,6 +22,7 @@ type TargetObservation struct {
 
 type DependencyObservation struct {
 	Name                 string
+	DependsOn            string
 	CurrentReplicas      int32
 	P95Latency           Metric
 	Utilization          Metric

@@ -30,6 +30,12 @@ func TestEvaluateCapacity(t *testing.T) {
 		}, ActionHold, "inventory", 4, 4},
 		{"healthy holds", capacity.Analysis{Classification: capacity.Healthy, Component: "target", Reason: "within SLO"}, func(*CapacityInput) {}, ActionHold, "target", 2, 2},
 		{"uncertain protects", capacity.Analysis{Classification: capacity.Uncertain, Component: "inventory", Reason: "missing telemetry"}, func(*CapacityInput) {}, ActionProtectedMode, "target", 2, 2},
+		{"capacity blocked holds non-scalable database", capacity.Analysis{Classification: capacity.CapacityBlocked, Component: "postgres", Reason: "database capacity is blocked"}, func(in *CapacityInput) {
+			in.Dependencies["postgres"] = ComponentInput{Name: "postgres", CurrentReplicas: 1, MinReplicas: 1, MaxReplicas: 1, Scalable: false}
+		}, ActionHold, "postgres", 1, 1},
+		{"incomplete database telemetry protects without scaling", capacity.Analysis{Classification: capacity.Uncertain, Component: "postgres", Reason: "dependency \"postgres\" telemetry is incomplete"}, func(in *CapacityInput) {
+			in.Dependencies["postgres"] = ComponentInput{Name: "postgres", CurrentReplicas: 1, MinReplicas: 1, MaxReplicas: 1, Scalable: false}
+		}, ActionProtectedMode, "target", 2, 2},
 		{"cooldown holds", capacity.Analysis{Classification: capacity.TargetSaturated, Component: "target", Reason: "overloaded"}, func(in *CapacityInput) {
 			last := now.Add(-time.Second)
 			in.LastScaleTime = &last

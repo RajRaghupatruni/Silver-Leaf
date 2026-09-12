@@ -18,15 +18,21 @@ minikube-load:
 	minikube image load optiscale/controller:dev
 	minikube image load optiscale/demo-app:dev
 	minikube image load optiscale/inventory-service:dev
+	docker pull postgres:16.4-alpine
+	minikube image load postgres:16.4-alpine
 
 install:
 	kubectl apply -f deploy/namespace.yaml
 	kubectl apply -f config/crd/optiscale.silver-leaf.io_optiscalers.yaml
+	kubectl wait --for=condition=Established --timeout=60s crd/optiscalers.optiscale.silver-leaf.io
 	kubectl apply -f config/rbac/serviceaccount.yaml
 	kubectl apply -f config/rbac/role.yaml
 	kubectl apply -f config/prometheus/prometheus-rbac.yaml
 	kubectl apply -f config/prometheus/prometheus-config.yaml
 	kubectl apply -f config/prometheus/prometheus-deployment.yaml
+	kubectl apply -f deploy/postgres/configmap.yaml
+	kubectl apply -f deploy/postgres/service.yaml
+	kubectl apply -f deploy/postgres/deployment.yaml
 	kubectl apply -f deploy/inventory/deployment.yaml
 	kubectl apply -f deploy/inventory/service.yaml
 	kubectl apply -f deploy/demo-app/deployment.yaml
@@ -49,6 +55,10 @@ uninstall:
 	kubectl delete -f config/manager/optiscaler-deployment.yaml --ignore-not-found=true
 	kubectl delete -f deploy/inventory/service.yaml --ignore-not-found=true
 	kubectl delete -f deploy/inventory/deployment.yaml --ignore-not-found=true
+	kubectl delete -f deploy/postgres/deployment.yaml --ignore-not-found=true
+	kubectl delete -f deploy/postgres/service.yaml --ignore-not-found=true
+	kubectl delete -f deploy/postgres/configmap.yaml --ignore-not-found=true
+	kubectl delete secret optiscale-postgres -n optiscale-demo --ignore-not-found=true
 	kubectl delete -f deploy/demo-app/service.yaml --ignore-not-found=true
 	kubectl delete -f deploy/demo-app/deployment.yaml --ignore-not-found=true
 	kubectl delete -f config/prometheus/prometheus-deployment.yaml --ignore-not-found=true
@@ -60,4 +70,4 @@ uninstall:
 	kubectl delete -f deploy/namespace.yaml --ignore-not-found=true
 
 generate:
-	@echo "The checked-in CRD is generated-style YAML for Vertical Slice 2."
+	@echo "The checked-in CRD is maintained in config/crd for the current vertical slice."

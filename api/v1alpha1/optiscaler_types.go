@@ -70,7 +70,9 @@ type MetricSpec struct {
 type DependencySpec struct {
 	// Name is the explainable dependency identifier.
 	// +kubebuilder:validation:MinLength=1
-	Name           string                   `json:"name"`
+	Name string `json:"name"`
+	// DependsOn identifies a configured downstream component that can explain this component's latency.
+	DependsOn      string                   `json:"dependsOn,omitempty"`
 	ScaleTargetRef ScaleTargetReference     `json:"scaleTargetRef"`
 	Metrics        DependencyMetricsSpec    `json:"metrics"`
 	Thresholds     DependencyThresholdsSpec `json:"thresholds"`

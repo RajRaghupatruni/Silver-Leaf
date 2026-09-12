@@ -58,6 +58,7 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 	snapshot := observation.Snapshot{
 		SLOTargetP95Milliseconds: resource.Spec.SLO.TargetP95Milliseconds,
 		Target: observation.TargetObservation{
+			Name:                 resource.Spec.ScaleTargetRef.Name,
 			CurrentReplicas:      targetCurrent,
 			P95Latency:           metricObservation(ctx, prom, resource.Spec.Metric.PrometheusQuery, now),
 			Utilization:          metricObservation(ctx, prom, resource.Spec.Metric.UtilizationQuery, now),
@@ -80,7 +81,7 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 			latency.Error = fmt.Sprintf("get dependency scale %s/%s: %v", depKey.Namespace, depKey.Name, depErr)
 		}
 		snapshot.Dependencies = append(snapshot.Dependencies, observation.DependencyObservation{
-			Name: dependency.Name, CurrentReplicas: current, P95Latency: latency, Utilization: utilization,
+			Name: dependency.Name, DependsOn: dependency.DependsOn, CurrentReplicas: current, P95Latency: latency, Utilization: utilization,
 			LatencyThreshold: dependency.Thresholds.LatencyMilliseconds, UtilizationThreshold: dependency.Thresholds.Utilization,
 			Scalable: dependency.Scalable, MinReplicas: dependency.MinReplicas, MaxReplicas: dependency.MaxReplicas,
 		})
@@ -122,7 +123,10 @@ func (r *OptiScalerReconciler) reconcileCapacity(ctx context.Context, resource *
 		status.DesiredReplicas = policyDecision.DesiredReplicas
 	}
 	status.ControlMode = controlMode(policyDecision.Action)
-	rejected := rejectedActions(policyDecision.Action)
+	rejected := analysis.RejectedActions
+	if len(rejected) == 0 {
+		rejected = rejectedActions(policyDecision.Action)
+	}
 	recordInput := decision.Input{
 		Action: string(policyDecision.Action), Reason: policyDecision.Reason,
 		ObservedMetric: observedP95, CurrentReplicas: policyDecision.CurrentReplicas,
@@ -379,6 +383,17 @@ func validateSpec(spec optiscalev1alpha1.OptiScalerSpec) error {
 		}
 		if math.IsNaN(dependency.Thresholds.LatencyMilliseconds) || math.IsInf(dependency.Thresholds.LatencyMilliseconds, 0) || dependency.Thresholds.LatencyMilliseconds < 0 || math.IsNaN(dependency.Thresholds.Utilization) || math.IsInf(dependency.Thresholds.Utilization, 0) || dependency.Thresholds.Utilization < 0 {
 			return fmt.Errorf("dependency %q thresholds must be finite and nonnegative", dependency.Name)
+		}
+	}
+	for _, dependency := range spec.Dependencies {
+		if dependency.DependsOn == "" {
+			continue
+		}
+		if dependency.DependsOn == dependency.Name {
+			return fmt.Errorf("dependency %q cannot depend on itself", dependency.Name)
+		}
+		if _, exists := seen[dependency.DependsOn]; !exists {
+			return fmt.Errorf("dependency %q refers to unconfigured dependsOn %q", dependency.Name, dependency.DependsOn)
 		}
 	}
 	return nil

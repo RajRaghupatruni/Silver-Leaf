@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: optiscale-demo
+data:
+  01-inventory.sql: |
+    CREATE TABLE IF NOT EXISTS inventory_items (
+      id BIGSERIAL PRIMARY KEY,
+      sku TEXT NOT NULL UNIQUE
+    );
+    INSERT INTO inventory_items (sku) VALUES ('widget'), ('gadget')
+    ON CONFLICT (sku) DO NOTHING;
