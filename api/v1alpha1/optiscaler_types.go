@@ -26,7 +26,7 @@ const (
 
 // OptiScalerSpec defines the desired capacity policy.
 type OptiScalerSpec struct {
-	// ScaleTargetRef identifies the namespaced workload to scale. Vertical Slice 1 supports Deployment only.
+	// ScaleTargetRef identifies the namespaced Deployment workload to scale.
 	// +kubebuilder:validation:Required
 	ScaleTargetRef ScaleTargetReference `json:"scaleTargetRef"`
 
@@ -149,7 +149,7 @@ type PrometheusSpec struct {
 	Address string `json:"address"`
 }
 
-// PredictionSpec configures the optional P0 predictive capacity advisory.
+// PredictionSpec configures optional, conservative predictive capacity evaluation.
 type PredictionSpec struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// SafeCapacityMargin is a fraction in (0,1] applied to empirically observed per-replica throughput.

@@ -1,56 +1,74 @@
-# OptiScale portfolio demo guide
+# Local operating guide
 
-## Prepare the dashboard and success run
+This guide runs the repository's local Kubernetes environment and explains the included workload profiles. The repository provides a reproducible local environment, not a permanently hosted public Kubernetes service.
 
-Install the local stack with `make install`, then run `deploy/grafana/open-dashboard.ps1` in its own PowerShell window. Open `http://localhost:3000` and select **OptiScale Capacity Governor**. The port-forward is loopback-only.
+## Prerequisites and installation
 
-The predictive-success k6 profile runs 65 seconds of baseline validation, 45 seconds of controller warmup, a 180-second ramp, and a 45-second plateau (335 seconds of scheduled traffic, plus startup). Start the proof before the short walkthrough:
+You need Docker, Minikube, kubectl, Make, and Go 1.23 or newer. Start Minikube, create the PostgreSQL Secret, build/load the local images, then install the resources:
 
-```powershell
-.\deploy\scenarios\predictable-ramp-success.ps1
-```
+~~~text
+minikube start --cpus=4 --memory=4096
+kubectl apply -f deploy/namespace.yaml
+make docker-build
+make minikube-load
+make install
+make status
+~~~
 
-The dashboard refreshes every five seconds. For controller state and the decision explanation, use a second terminal:
+Before installation, the namespace <code>optiscale-demo</code> needs Secret <code>optiscale-postgres</code> with keys <code>username</code> and <code>password</code>. The repository includes <code>deploy/postgres/create-secret.ps1</code>, a PowerShell helper for local Secret creation. Its default password is local-only; supply your own password for other environments and do not reuse the default.
 
-```powershell
-kubectl -n optiscale-demo get optiscaler demo-api -w
-```
+<code>make install</code> applies the namespaced CRD, RBAC, Prometheus, Grafana, PostgreSQL, inventory service, demo API, controller, and sample OptiScaler. <code>make loadgen</code> starts the optional continuous curl-based load generator. The k6 profiles are launched by the PowerShell scenario helpers; no Bash launcher is included.
 
-## 60-second walkthrough
+## Dashboard and controller state
 
-Use a completed or currently running success proof; the workload itself takes several minutes and is not a 60-second test.
+In a PowerShell terminal, run the dashboard helper:
 
-- **0-10s — demand:** show the rising demo-api request rate.
-- **10-20s — user impact:** compare p95 to the visible 250ms SLO line; point out that the prescale decision was made while p95 was still healthy.
-- **20-30s — useful capacity:** show effective-serving replicas stepping from 2 to 3. Requested and Kubernetes Ready counts are not Prometheus series in this deployment; verify them with `kubectl get deployment demo-api -n optiscale-demo`.
-- **30-40s — constrained resource:** compare aggregate and hottest held-slot occupancy to the 15-slot safe operating boundary.
-- **40-50s — dependency context:** show inventory and PostgreSQL-query p95 to distinguish a target-demand prescale from a downstream bottleneck.
-- **50-60s — explain the decision:** inspect `status.lastScaleDecision` in the OptiScaler YAML for predictive demand, forecast, realized safe capacity, confidence, and planning-horizon evidence. These values are not exported as Prometheus series; the dashboard's success/error RPS panel is an explicit substitute, not a fabricated forecast panel.
+~~~powershell
+.\deploy\grafana\open-dashboard.ps1
+~~~
 
-The supplied 2026-09-12 run showed a new `PRESCALE_TARGET` from 2 to 3 with HIGH forecast confidence, a 51-second planning horizon, and healthy p95; the third replica became both Ready and effective-serving before the SLO boundary. See the README for the recorded numeric evidence. Treat it as evidence from this controlled run, not as a universal production guarantee.
+Open <code>http://localhost:3000</code>. The helper uses a loopback-only kubectl port-forward. Grafana is provisioned with anonymous Viewer access for the local environment, an ephemeral data directory, and a Prometheus datasource. Do not expose this configuration as a public service.
 
-For the predictive event itself, watch the dashboard around the decision:
+The dashboard shows demand RPS, demo-api p95 against 250 ms, effective-serving replicas, held-slot occupancy, success/error RPS, and inventory/PostgreSQL query p95. This Prometheus installation does not include kube-state-metrics, so requested and Ready replicas are checked with Kubernetes:
 
-- **Before:** demand rises while p95 remains below 250ms; effective-serving count is 2, and inventory/PostgreSQL p95 stays healthy. Read the forecast acceptance and safe-capacity comparison from the OptiScaler status, not from Grafana.
-- **During:** when a new `PRESCALE_TARGET` is recorded, note the 2 -> 3 scale decision and keep watching p95 against the SLO line. The dashboard does not ingest Kubernetes Events or controller status as Prometheus series.
-- **After:** confirm the effective-serving series reaches 3 as traffic arrives at the new replica, p95 remains healthy, and the controller holds rather than requesting another target scale. Check requested/Ready counts with Kubernetes because those series are not scraped.
+~~~text
+kubectl -n optiscale-demo get deployment demo-api
+kubectl -n optiscale-demo get optiscaler demo-api -o yaml
+kubectl -n optiscale-system logs deployment/optiscaler-controller
+~~~
 
-## Complementary scenarios
+The OptiScaler resource's <code>status.lastDecision</code> explains the latest evaluation. <code>status.lastScaleDecision</code> retains the last evaluation that made a real scale change. Forecast and realized safe-capacity measurements are in status/DecisionRecord, not Prometheus time series.
 
-The original profile is a capacity-realization guardrail case. It retains normal long-lived connection reuse and may show 3 Kubernetes Ready replicas while only 2 have meaningful recent traffic. OptiScale should not credit the idle Ready replica or blindly continue scaling; the run may cross the SLO and is not the success proof.
+## Workload profiles
 
-```powershell
-.\deploy\scenarios\predictable-ramp.ps1
-```
+Run one profile at a time. The scenario scripts modify workload environment variables and replica settings; review each script before running it in a shared cluster.
 
-The database bottleneck profile demonstrates `CAPACITY_BLOCKED` / `HOLD` when the non-scalable PostgreSQL dependency is the measured bottleneck:
+| PowerShell helper | Purpose and expected behavior |
+| --- | --- |
+| <code>deploy/scenarios/target-saturation.ps1</code> | Raises demo-api local demand; expects <code>TARGET_SATURATED</code> and bounded <code>SCALE_TARGET</code>. |
+| <code>deploy/scenarios/dependency-saturation.ps1</code> | Exercises a saturated scalable inventory dependency; expects <code>DEPENDENCY_SATURATED</code> and bounded <code>SCALE_DEPENDENCY</code>. |
+| <code>deploy/scenarios/database-bottleneck.ps1</code> | Uses real PostgreSQL queries with deterministic <code>pg_sleep</code>; PostgreSQL is configured non-scalable, so the expected result is <code>CAPACITY_BLOCKED</code> / <code>HOLD</code> with upstream replica counts unchanged. |
+| <code>deploy/scenarios/predictable-ramp-success.ps1</code> | Runs the open-loop k6 profile with moderate periodic connection rotation and validates a new <code>PRESCALE_TARGET</code>, real 2 -> 3 target scaling, third-replica readiness below SLO, and a new Kubernetes Event. |
+| <code>deploy/scenarios/predictable-ramp.ps1</code> | Uses the long-lived connection profile to exercise the capacity-realization guard. Ready may exceed effective-serving count after scale-up; OptiScale should hold further target scaling. This run may cross the SLO and is not the SLO-preservation profile. |
 
-```powershell
-.\deploy\scenarios\database-bottleneck.ps1
-```
+The successful predictive profile schedules 200 RPS during baseline and controller warmup, ramps linearly from 200 to 480 RPS over 180 seconds, then holds 480 RPS for 45 seconds. Approximately every 25th iteration per VU requests connection close; this is a controlled local traffic model, not a general production assumption. The recorded successful run and its measurements are in the [README runtime proof](../README.md#runtime-proof).
 
-## Interview narrative and limits
+## Understanding the two capacity outcomes
 
-> requested replicas are not necessarily useful capacity
+The predictive success profile uses moderate connection turnover so the new Ready endpoint has opportunities to receive fresh connections. In the recorded run, the third replica became Ready and traffic-bearing before the SLO boundary.
 
-Kubernetes readiness is necessary, but OptiScale credits realized target capacity using recent traffic-bearing replicas. Connection reuse or Service traffic distribution can plausibly delay traffic reaching a new endpoint; this demo does not prove a specific networking mechanism. The dashboard is visualization only and is not a controller input. Requested/Ready replicas require Kubernetes inspection because kube-state-metrics is not deployed. Forecast demand and realized safe capacity currently live in OptiScaler status/DecisionRecord rather than Prometheus, so Grafana shows observed success/error RPS instead. The demo is local, uses a controlled k6 arrival profile with bounded periodic connection rotation in the success case, and does not establish behavior for arbitrary production traffic. PostgreSQL panels show application-observed query latency, not database-internal utilization.
+The capacity-realization profile retains normal long-lived connection reuse. A new endpoint can be Ready while recent request telemetry still shows only two effective-serving replicas. OptiScale does not credit that endpoint as realized capacity and holds further target scale-ups until traffic confirms useful service. Connection reuse or Service traffic distribution can plausibly explain delayed traffic, but the observed metrics do not prove a particular network mechanism.
+
+The PostgreSQL profile demonstrates a different decision: latency may be caused by a non-scalable downstream bottleneck, in which case adding demo-api or inventory replicas does not create database capacity. OptiScale records the PostgreSQL bottleneck, returns <code>CAPACITY_BLOCKED</code> / <code>HOLD</code>, and reports why upstream scale actions were rejected.
+
+## Restore or remove the local environment
+
+Reapply workload manifests to restore their declared settings:
+
+~~~text
+kubectl apply -f deploy/inventory/deployment.yaml
+kubectl apply -f deploy/demo-app/deployment.yaml
+kubectl apply -f deploy/loadgen/deployment.yaml
+~~~
+
+The inventory manifest restores its declared PostgreSQL delay and baseline settings. To remove the local lab resources, use <code>make uninstall</code>; this deletes the lab namespaces and the CRD as well as the deployments. PostgreSQL uses ephemeral storage in this environment.

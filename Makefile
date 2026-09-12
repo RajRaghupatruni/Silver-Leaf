@@ -72,4 +72,4 @@ uninstall:
 	kubectl delete -f deploy/namespace.yaml --ignore-not-found=true
 
 generate:
-	@echo "The checked-in CRD is maintained in config/crd for the current vertical slice."
+	@echo "The checked-in CRD is maintained in config/crd."
